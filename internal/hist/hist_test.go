@@ -34,10 +34,10 @@ func TestPercentileEmpty(t *testing.T) {
 }
 
 func TestSub(t *testing.T) {
-	a := []uint64{5, 7, 1}
-	b := []uint64{2, 7, 0}
+	a := []uint64{5, 7, 1, 0}
+	b := []uint64{2, 7, 0, 4}
 	got := Sub(a, b)
-	want := []uint64{3, 0, 1}
+	want := []uint64{3, 0, 1, 0}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("Sub = %v, want %v", got, want)

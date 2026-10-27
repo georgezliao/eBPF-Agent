@@ -2,7 +2,10 @@
 // durations in [2^i, 2^(i+1)) nanoseconds (slot 0 also holds 0 ns).
 package hist
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // Percentile returns the upper bound of the slot holding the q-th sample (0 < q <= 1).
 // Log2 buckets make this an overestimate by up to 2x, which is enough to tell a 50 µs
@@ -15,10 +18,7 @@ func Percentile(h []uint64, q float64) time.Duration {
 	if total == 0 {
 		return 0
 	}
-	rank := uint64(q * float64(total))
-	if rank == 0 {
-		rank = 1
-	}
+	rank := max(1, uint64(math.Ceil(q*float64(total)))) // nearest rank
 	var seen uint64
 	for i, n := range h {
 		seen += n
@@ -30,10 +30,13 @@ func Percentile(h []uint64, q float64) time.Duration {
 }
 
 // Sub returns a - b element-wise, for turning two cumulative snapshots into an interval.
+// Slots that went backwards (the key was deleted and recreated) count as 0.
 func Sub(a, b []uint64) []uint64 {
 	out := make([]uint64, len(a))
 	for i := range a {
-		out[i] = a[i] - b[i]
+		if a[i] > b[i] {
+			out[i] = a[i] - b[i]
+		}
 	}
 	return out
 }
