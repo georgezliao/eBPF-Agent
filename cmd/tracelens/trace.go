@@ -92,6 +92,54 @@ type jsonEvent struct {
 	Comm       string `json:"comm"`
 }
 
+// capture records every event of tgid for dur and returns the summary. If out isn't
+// empty, each event is also written there as a JSON line.
+func capture(ctx context.Context, p *probe.Probe, tgid uint32, dur, minDur time.Duration, out string) (*summary, error) {
+	rd, err := p.Events()
+	if err != nil {
+		return nil, err
+	}
+	defer rd.Close()
+
+	var enc *json.Encoder
+	if out != "" {
+		f, err := os.Create(out)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		enc = json.NewEncoder(f)
+	}
+
+	if err := p.SetTarget(tgid, minDur); err != nil {
+		return nil, err
+	}
+	defer p.SetTarget(0, 0)
+
+	ctx, cancel := context.WithTimeout(ctx, dur)
+	defer cancel()
+	go func() { <-ctx.Done(); rd.Close() }()
+
+	s := newSummary()
+	for {
+		rec, err := rd.Read()
+		if errors.Is(err, ringbuf.ErrClosed) {
+			return s, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		e, err := probe.Decode(rec.RawSample)
+		if err != nil {
+			return nil, err
+		}
+		s.add(e)
+		if enc != nil {
+			enc.Encode(jsonEvent{e.TsNs, e.DurationNs, probe.Op(e.Op).String(), e.Ret, e.Tgid, e.Tid, e.CommString()})
+		}
+	}
+}
+
 func runTrace(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("trace", flag.ExitOnError)
 	pid := fs.Uint("pid", 0, "process to trace (required)")
@@ -108,50 +156,12 @@ func runTrace(ctx context.Context, args []string) error {
 		return err
 	}
 	defer p.Close()
-	rd, err := p.Events()
+
+	fmt.Printf("Tracing PID %d (%s) for %s...\n", *pid, comm(uint32(*pid)), *dur)
+	s, err := capture(ctx, p, uint32(*pid), *dur, *minDur, *out)
 	if err != nil {
 		return err
 	}
-	defer rd.Close()
-
-	var enc *json.Encoder
-	if *out != "" {
-		f, err := os.Create(*out)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		enc = json.NewEncoder(f)
-	}
-
-	if err := p.SetTarget(uint32(*pid), *minDur); err != nil {
-		return err
-	}
-	fmt.Printf("Tracing PID %d (%s) for %s...\n", *pid, comm(uint32(*pid)), *dur)
-
-	ctx, cancel := context.WithTimeout(ctx, *dur)
-	defer cancel()
-	go func() { <-ctx.Done(); rd.Close() }()
-
-	s := newSummary()
-	for {
-		rec, err := rd.Read()
-		if errors.Is(err, ringbuf.ErrClosed) {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		e, err := probe.Decode(rec.RawSample)
-		if err != nil {
-			return err
-		}
-		s.add(e)
-		if enc != nil {
-			enc.Encode(jsonEvent{e.TsNs, e.DurationNs, probe.Op(e.Op).String(), e.Ret, e.Tgid, e.Tid, e.CommString()})
-		}
-	}
-
 	drops, _, err := p.Lost()
 	if err != nil {
 		return err
