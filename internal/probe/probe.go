@@ -26,10 +26,11 @@ const (
 	OpWrite
 	OpOpenat
 	OpConnect
+	OpFsync // fsync and fdatasync
 	NumOps
 )
 
-var opNames = []string{"read", "write", "openat", "connect"}
+var opNames = []string{"read", "write", "openat", "connect", "fsync"}
 
 func (o Op) String() string {
 	if int(o) < len(opNames) {
@@ -39,7 +40,7 @@ func (o Op) String() string {
 }
 
 // Ops lists every traced syscall in display order.
-var Ops = []Op{OpRead, OpWrite, OpOpenat, OpConnect}
+var Ops = []Op{OpRead, OpWrite, OpOpenat, OpConnect, OpFsync}
 
 type (
 	Key   = tracelensStatsKey

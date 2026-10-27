@@ -51,21 +51,25 @@ type tracelensTraceConfig struct {
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
-	tracelensMapActive        = "active"
-	tracelensMapConfig        = "config"
-	tracelensMapDrops         = "drops"
-	tracelensMapEvents        = "events"
-	tracelensMapStats         = "stats"
-	tracelensProgEnterConnect = "enter_connect"
-	tracelensProgEnterOpenat  = "enter_openat"
-	tracelensProgEnterRead    = "enter_read"
-	tracelensProgEnterWrite   = "enter_write"
-	tracelensProgExitConnect  = "exit_connect"
-	tracelensProgExitOpenat   = "exit_openat"
-	tracelensProgExitRead     = "exit_read"
-	tracelensProgExitWrite    = "exit_write"
-	tracelensProgProcessExit  = "process_exit"
-	tracelensVarUnusedEvent   = "unused_event"
+	tracelensMapActive          = "active"
+	tracelensMapConfig          = "config"
+	tracelensMapDrops           = "drops"
+	tracelensMapEvents          = "events"
+	tracelensMapStats           = "stats"
+	tracelensProgEnterConnect   = "enter_connect"
+	tracelensProgEnterFdatasync = "enter_fdatasync"
+	tracelensProgEnterFsync     = "enter_fsync"
+	tracelensProgEnterOpenat    = "enter_openat"
+	tracelensProgEnterRead      = "enter_read"
+	tracelensProgEnterWrite     = "enter_write"
+	tracelensProgExitConnect    = "exit_connect"
+	tracelensProgExitFdatasync  = "exit_fdatasync"
+	tracelensProgExitFsync      = "exit_fsync"
+	tracelensProgExitOpenat     = "exit_openat"
+	tracelensProgExitRead       = "exit_read"
+	tracelensProgExitWrite      = "exit_write"
+	tracelensProgProcessExit    = "process_exit"
+	tracelensVarUnusedEvent     = "unused_event"
 )
 
 // loadTracelens returns the embedded CollectionSpec for tracelens.
@@ -110,15 +114,19 @@ type tracelensSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type tracelensProgramSpecs struct {
-	EnterConnect *ebpf.ProgramSpec `ebpf:"enter_connect"`
-	EnterOpenat  *ebpf.ProgramSpec `ebpf:"enter_openat"`
-	EnterRead    *ebpf.ProgramSpec `ebpf:"enter_read"`
-	EnterWrite   *ebpf.ProgramSpec `ebpf:"enter_write"`
-	ExitConnect  *ebpf.ProgramSpec `ebpf:"exit_connect"`
-	ExitOpenat   *ebpf.ProgramSpec `ebpf:"exit_openat"`
-	ExitRead     *ebpf.ProgramSpec `ebpf:"exit_read"`
-	ExitWrite    *ebpf.ProgramSpec `ebpf:"exit_write"`
-	ProcessExit  *ebpf.ProgramSpec `ebpf:"process_exit"`
+	EnterConnect   *ebpf.ProgramSpec `ebpf:"enter_connect"`
+	EnterFdatasync *ebpf.ProgramSpec `ebpf:"enter_fdatasync"`
+	EnterFsync     *ebpf.ProgramSpec `ebpf:"enter_fsync"`
+	EnterOpenat    *ebpf.ProgramSpec `ebpf:"enter_openat"`
+	EnterRead      *ebpf.ProgramSpec `ebpf:"enter_read"`
+	EnterWrite     *ebpf.ProgramSpec `ebpf:"enter_write"`
+	ExitConnect    *ebpf.ProgramSpec `ebpf:"exit_connect"`
+	ExitFdatasync  *ebpf.ProgramSpec `ebpf:"exit_fdatasync"`
+	ExitFsync      *ebpf.ProgramSpec `ebpf:"exit_fsync"`
+	ExitOpenat     *ebpf.ProgramSpec `ebpf:"exit_openat"`
+	ExitRead       *ebpf.ProgramSpec `ebpf:"exit_read"`
+	ExitWrite      *ebpf.ProgramSpec `ebpf:"exit_write"`
+	ProcessExit    *ebpf.ProgramSpec `ebpf:"process_exit"`
 }
 
 // tracelensMapSpecs contains maps before they are loaded into the kernel.
@@ -187,24 +195,32 @@ type tracelensVariables struct {
 //
 // It can be passed to loadTracelensObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tracelensPrograms struct {
-	EnterConnect *ebpf.Program `ebpf:"enter_connect"`
-	EnterOpenat  *ebpf.Program `ebpf:"enter_openat"`
-	EnterRead    *ebpf.Program `ebpf:"enter_read"`
-	EnterWrite   *ebpf.Program `ebpf:"enter_write"`
-	ExitConnect  *ebpf.Program `ebpf:"exit_connect"`
-	ExitOpenat   *ebpf.Program `ebpf:"exit_openat"`
-	ExitRead     *ebpf.Program `ebpf:"exit_read"`
-	ExitWrite    *ebpf.Program `ebpf:"exit_write"`
-	ProcessExit  *ebpf.Program `ebpf:"process_exit"`
+	EnterConnect   *ebpf.Program `ebpf:"enter_connect"`
+	EnterFdatasync *ebpf.Program `ebpf:"enter_fdatasync"`
+	EnterFsync     *ebpf.Program `ebpf:"enter_fsync"`
+	EnterOpenat    *ebpf.Program `ebpf:"enter_openat"`
+	EnterRead      *ebpf.Program `ebpf:"enter_read"`
+	EnterWrite     *ebpf.Program `ebpf:"enter_write"`
+	ExitConnect    *ebpf.Program `ebpf:"exit_connect"`
+	ExitFdatasync  *ebpf.Program `ebpf:"exit_fdatasync"`
+	ExitFsync      *ebpf.Program `ebpf:"exit_fsync"`
+	ExitOpenat     *ebpf.Program `ebpf:"exit_openat"`
+	ExitRead       *ebpf.Program `ebpf:"exit_read"`
+	ExitWrite      *ebpf.Program `ebpf:"exit_write"`
+	ProcessExit    *ebpf.Program `ebpf:"process_exit"`
 }
 
 func (p *tracelensPrograms) Close() error {
 	return _TracelensClose(
 		p.EnterConnect,
+		p.EnterFdatasync,
+		p.EnterFsync,
 		p.EnterOpenat,
 		p.EnterRead,
 		p.EnterWrite,
 		p.ExitConnect,
+		p.ExitFdatasync,
+		p.ExitFsync,
 		p.ExitOpenat,
 		p.ExitRead,
 		p.ExitWrite,

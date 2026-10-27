@@ -11,7 +11,7 @@
 #define EAGAIN 11
 #define EINPROGRESS 115
 
-enum op { OP_READ, OP_WRITE, OP_OPENAT, OP_CONNECT, NUM_OPS };
+enum op { OP_READ, OP_WRITE, OP_OPENAT, OP_CONNECT, OP_FSYNC, NUM_OPS };
 
 // Context layouts from /sys/kernel/tracing/events/syscalls/sys_{enter,exit}_*/format.
 // Every syscall tracepoint has the same 8-byte common header and int syscall number.
@@ -183,6 +183,8 @@ SYSCALL_PROBES(read, OP_READ)
 SYSCALL_PROBES(write, OP_WRITE)
 SYSCALL_PROBES(openat, OP_OPENAT)
 SYSCALL_PROBES(connect, OP_CONNECT)
+SYSCALL_PROBES(fsync, OP_FSYNC)
+SYSCALL_PROBES(fdatasync, OP_FSYNC)
 
 // Drop a process's stats when its main thread exits, so the stats map only holds live
 // processes. If the leader exits before other threads, their later syscalls recreate

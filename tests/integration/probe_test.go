@@ -132,3 +132,28 @@ func TestWouldBlockIsNotAnError(t *testing.T) {
 		t.Errorf("EAGAIN changed byte count: %d -> %d", before.Bytes, after.Bytes)
 	}
 }
+
+func TestFsyncAndFdatasyncShareAnOp(t *testing.T) {
+	p := openProbe(t)
+	f, err := os.CreateTemp("", "tracelens-fsync")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+
+	before := readStats(t, p, probe.OpFsync)
+	for range 3 {
+		f.Write([]byte("x"))
+		if err := f.Sync(); err != nil { // fsync
+			t.Fatal(err)
+		}
+		if err := syscall.Fdatasync(int(f.Fd())); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after := readStats(t, p, probe.OpFsync)
+	if got := after.Count - before.Count; got != 6 {
+		t.Errorf("fsync count delta = %d, want 6", got)
+	}
+}
