@@ -32,7 +32,9 @@ struct task_struct {
 
 struct trace_config {
 	__u32 target_tgid;      // 0 = no detailed events
-	__u32 pad;
+	// Benchmark "raw" mode: send every call of every process to userspace and skip
+	// in-kernel aggregation, so userspace has to do it instead.
+	__u32 export_all;
 	__u64 min_duration_ns;  // detailed events shorter than this are dropped in-kernel
 };
 
@@ -167,16 +169,9 @@ static __always_inline void record(__u32 tgid, __u32 op, __u64 dur, __s64 ret)
 	}
 }
 
-// task names the process the event is about when it isn't the current one (sched_switch
-// runs on behalf of the task being switched out); NULL means current.
 static __always_inline void emit(__u32 tgid, __u32 tid, __u32 op, __u64 now, __u64 dur, __s64 ret,
 				 struct task_struct *task)
 {
-	__u32 zero = 0;
-	struct trace_config *cfg = bpf_map_lookup_elem(&config, &zero);
-	if (!cfg || cfg->target_tgid != tgid || dur < cfg->min_duration_ns)
-		return;
-
 	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e) {
 		count_lost(LOST_EVENTS);
@@ -195,6 +190,26 @@ static __always_inline void emit(__u32 tgid, __u32 tid, __u32 op, __u64 now, __u
 	bpf_ringbuf_submit(e, 0);
 }
 
+// deliver handles one finished call or run-queue wait: aggregate it, and send it to
+// userspace if it belongs to the traced process. task names the process when it isn't
+// the current one (sched_switch runs on behalf of the task being switched out); NULL
+// means current.
+static __always_inline void deliver(__u32 tgid, __u32 tid, __u32 op, __u64 now, __u64 dur,
+				    __s64 ret, struct task_struct *task)
+{
+	__u32 zero = 0;
+	struct trace_config *cfg = bpf_map_lookup_elem(&config, &zero);
+	if (!cfg)
+		return;
+	if (cfg->export_all) {
+		emit(tgid, tid, op, now, dur, ret, task);
+		return;
+	}
+	record(tgid, op, dur, ret);
+	if (cfg->target_tgid == tgid && dur >= cfg->min_duration_ns)
+		emit(tgid, tid, op, now, dur, ret, task);
+}
+
 static __always_inline int on_exit(__u32 op, __s64 ret)
 {
 	__u64 id = bpf_get_current_pid_tgid();
@@ -207,8 +222,7 @@ static __always_inline int on_exit(__u32 op, __s64 ret)
 	__u64 dur = now - *start;
 	bpf_map_delete_elem(&active, &tid);
 
-	record(tgid, op, dur, ret);
-	emit(tgid, tid, op, now, dur, ret, 0);
+	deliver(tgid, tid, op, now, dur, ret, 0);
 	return 0;
 }
 
@@ -275,8 +289,7 @@ int sched_switch(__u64 *ctx)
 	bpf_map_delete_elem(&runnable, &tid);
 
 	__u32 tgid = next->tgid;
-	record(tgid, OP_RUNQ, dur, 0);
-	emit(tgid, tid, OP_RUNQ, now, dur, 0, next);
+	deliver(tgid, tid, OP_RUNQ, now, dur, 0, next);
 	return 0;
 }
 

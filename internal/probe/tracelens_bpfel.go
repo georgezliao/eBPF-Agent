@@ -43,7 +43,7 @@ type tracelensStatsKey struct {
 type tracelensTraceConfig struct {
 	_             structs.HostLayout
 	TargetTgid    uint32
-	Pad           uint32
+	ExportAll     uint32
 	MinDurationNs uint64
 }
 
