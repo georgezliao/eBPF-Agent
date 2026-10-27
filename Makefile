@@ -1,13 +1,15 @@
 # The agent only runs on Linux. On macOS everything is cross-compiled and then run
-# inside a privileged container by scripts/linux.sh.
-CLANG ?= $(shell command -v /opt/homebrew/opt/llvm/bin/clang || command -v clang)
+# inside a Linux VM by scripts/linux.sh.
+# bpf2go needs clang and llvm-strip with the bpf target. Apple's clang has no bpf
+# backend, so Homebrew's LLVM goes first on PATH when it exists.
+LLVM ?= /opt/homebrew/opt/llvm/bin
 GOARCH ?= $(shell go env GOARCH)
 LINUX = GOOS=linux GOARCH=$(GOARCH) CGO_ENABLED=0
 
 .PHONY: generate build check itest clean
 
 generate:
-	BPF_CLANG=$(CLANG) go generate ./...
+	PATH="$(LLVM):$$PATH" go generate ./...
 
 build: generate
 	$(LINUX) go build -o bin/ ./cmd/...
