@@ -1,3 +1,5 @@
+//go:build linux
+
 // Command demo is a stand-in for a service that commits each request to a write-ahead
 // log: it appends a record and calls fdatasync, at a fixed request rate, and prints its
 // own request latency every second. It exists to give TraceLens a slowdown to find.
