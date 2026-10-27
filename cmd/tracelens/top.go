@@ -129,6 +129,9 @@ func runTop(ctx context.Context, args []string) error {
 			}
 			fmt.Printf("\n%s\n", now.Format("15:04:05"))
 			printTop(os.Stdout, rates(probe.Delta(prev, cur), now.Sub(last).Seconds()), *limit)
+			if err := p.ForgetExited(cur); err != nil {
+				return err
+			}
 			prev, last = cur, now
 		}
 	}
