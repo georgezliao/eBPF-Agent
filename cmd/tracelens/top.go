@@ -17,11 +17,10 @@ import (
 
 // procRow is one process's activity over a sampling interval.
 type procRow struct {
-	tgid     uint32
-	perSec   [probe.NumOps]float64
-	errSec   float64
-	readP99  time.Duration
-	writeP99 time.Duration
+	tgid   uint32
+	perSec [probe.NumOps]float64
+	p99    [probe.NumOps]time.Duration
+	errSec float64
 }
 
 func (r procRow) total() float64 {
@@ -52,13 +51,7 @@ func interval(prev, cur map[probe.Key]probe.Stats, secs float64) []procRow {
 		}
 		r.perSec[k.Op] = float64(n) / secs
 		r.errSec += float64(c.Errors-p.Errors) / secs
-		p99 := hist.Percentile(hist.Sub(c.Hist[:], p.Hist[:]), 0.99)
-		switch probe.Op(k.Op) {
-		case probe.OpRead:
-			r.readP99 = p99
-		case probe.OpWrite:
-			r.writeP99 = p99
-		}
+		r.p99[k.Op] = hist.Percentile(hist.Sub(c.Hist[:], p.Hist[:]), 0.99)
 	}
 	rows := make([]procRow, 0, len(byPID))
 	for _, r := range byPID {
@@ -83,15 +76,15 @@ func comm(pid uint32) string {
 
 func printTop(w io.Writer, rows []procRow, limit int) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, "PID\tCOMM\tREAD/s\tWRITE/s\tOPEN/s\tCONNECT/s\tERR/s\tREAD p99\tWRITE p99\t")
+	fmt.Fprintln(tw, "PID\tCOMM\tREAD/s\tWRITE/s\tOPEN/s\tCONN/s\tFSYNC/s\tERR/s\tREAD p99\tWRITE p99\tFSYNC p99\t")
 	for i, r := range rows {
 		if i == limit {
 			break
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.1f\t%s\t%s\t\n",
+		fmt.Fprintf(tw, "%d\t%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\t%.1f\t%s\t%s\t%s\t\n",
 			r.tgid, comm(r.tgid), r.perSec[probe.OpRead], r.perSec[probe.OpWrite],
-			r.perSec[probe.OpOpenat], r.perSec[probe.OpConnect], r.errSec,
-			fmtDur(r.readP99), fmtDur(r.writeP99))
+			r.perSec[probe.OpOpenat], r.perSec[probe.OpConnect], r.perSec[probe.OpFsync], r.errSec,
+			fmtDur(r.p99[probe.OpRead]), fmtDur(r.p99[probe.OpWrite]), fmtDur(r.p99[probe.OpFsync]))
 	}
 	tw.Flush()
 }
