@@ -1,0 +1,3 @@
+mode,reads,bpf_runs,bpf_seconds,ns_per_run,bpf_ns_per_read
+aggregated,2195750,4443008,1.0999,248,501
+raw,2335500,4866137,0.5996,123,257
