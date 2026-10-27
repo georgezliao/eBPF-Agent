@@ -25,7 +25,7 @@ The output below is from one run in the Lima VM described in [benchmarks.md](ben
   6714             demo       0      197       0       0      196    0.0         -      262µs     16.8ms      66µs
 ```
 
-`top`'s p99 is a log2 bucket bound, so 4.2 ms means "between 2.1 and 4.2 ms". The jump is in `FSYNC p99`; run-queue delay doesn't move, which rules out CPU starvation as the cause. The demo's own log for the same period:
+`top`'s p99 is a log2 bucket bound, so 4.2 ms means "between 2.1 and 4.2 ms". The jump is in `FSYNC p99`. Run-queue delay doesn't move, so the demo isn't waiting for a CPU. The demo's own log for the same period:
 
 ```
 01:31:36  requests 201  p50 936µs  p99 2.384ms
