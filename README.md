@@ -72,7 +72,7 @@ scripts/linux.sh bin/tracelens top
 make itest
 ```
 
-The integration tests in `tests/integration` check that slow reads land in the right histogram bucket, that EAGAIN isn't an error, that the trace target can be switched at runtime without leaking other processes' events, that the minimum-duration filter works in the kernel, that a full ring buffer counts drops, that run-queue delay under CPU contention is about what the arithmetic predicts, and that a process that exits between samples is still counted.
+The integration tests in `tests/integration` drive known workloads (slow pipe reads, failing reads, CPU spinners, short-lived processes) and check what the maps and ring buffer report.
 
 ## Demo
 
@@ -82,11 +82,11 @@ The integration tests in `tests/integration` check that slow reads land in the r
 
 Measured in a 4-vCPU Lima VM on an M4 MacBook Air with a worst-case workload: back-to-back 1-byte reads from `/dev/zero`, about 200 ns each. Full method and caveats are in [docs/benchmarks.md](docs/benchmarks.md).
 
-| | reads/s, 2 threads unthrottled | agent CPU at 1M reads/s | BPF time per read, unthrottled |
+| | reads/s, 2 threads unthrottled | agent CPU at 1M reads/s | BPF time per read, unthrottled (upper bound) |
 | --- | --- | --- | --- |
 | no tracing | 10.0M | | |
-| in-kernel aggregation (default) | 5.81M | ~0% | 120 ns |
-| every event to userspace (`-export-all`) | 4.18M, 40-48% of events dropped | 30% of a core | 234 ns |
+| in-kernel aggregation (default) | 5.81M | ~0% | ≤120 ns |
+| every event to userspace (`-export-all`) | 4.18M, ~8.7M events dropped per 5 s run | 30% of a core | ≤234 ns |
 
 For syscalls that take microseconds or more, the per-call cost is a much smaller fraction. Latency comparisons at paced rates turned out to depend on how idle the VM was, so the writeup doesn't rely on them.
 
@@ -99,6 +99,10 @@ The full list is in [docs/limitations.md](docs/limitations.md). The ones most li
 - **p99 in `top`, `/metrics` and the trigger is a log2 bucket upper bound**, up to 2x the true value. `trace` is exact.
 - **Triggered captures start up to one interval after the spike**, so they can miss its peak.
 - **One traced process at a time**, and PIDs are from the host PID namespace.
+
+## Notes
+
+[docs/learnings.md](docs/learnings.md) is a less formal write-up of what turned up while building this: Go's netpoller hiding socket latency, tracing yourself, the bugs code review caught, and why the latency benchmarks had to be thrown out.
 
 ## Layout
 

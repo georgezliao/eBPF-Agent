@@ -1,6 +1,6 @@
 # Architecture
 
-TraceLens answers one question about a Linux process: where is it waiting? It times four kinds of blocking syscall plus the time each thread spends runnable but not running, keeps cheap per-process histograms of those all the time, and records individual calls only for one process at a time and only when asked.
+TraceLens answers one question about a Linux process: where is it waiting? It times five syscalls (`read`, `write`, `openat`, `connect`, and `fsync`/`fdatasync` counted together) plus the time each thread spends runnable but not running, keeps cheap per-process histograms of those all the time, and records individual calls only for one process at a time and only when asked.
 
 ## Data flow
 
