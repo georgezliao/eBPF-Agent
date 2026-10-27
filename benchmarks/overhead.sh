@@ -21,6 +21,8 @@ TCK=$(getconf CLK_TCK)
 # CPU ticks (user + system) used so far by a process.
 ticks() { awk '{print $14 + $15}' "/proc/$1/stat"; }
 metric() { curl -s "127.0.0.1:$PORT/metrics" | awk -v m="$1" '$1 == m {print $2}'; }
+# The agent serves /metrics only after its probes are attached.
+ready() { until curl -sf "127.0.0.1:$PORT/metrics" >/dev/null; do sleep 0.1; done; }
 json() { sed -E "s/.*\"$1\":([0-9.e+]+).*/\1/" <<<"$2"; }
 
 echo "mode,target_rate,rep,achieved_ops_per_sec,load_p50_ns,load_p99_ns,agent_cpu_pct,events_dropped"
@@ -32,7 +34,7 @@ for rate in $RATES; do
         aggregated) bin/tracelens agent -listen 127.0.0.1:$PORT >/dev/null 2>&1 & agent=$! ;;
         raw) bin/tracelens agent -listen 127.0.0.1:$PORT -export-all -ring "$RING" >/dev/null 2>&1 & agent=$! ;;
       esac
-      [ -n "$agent" ] && sleep 1 # let the probes attach
+      [ -n "$agent" ] && ready
 
       before=0; [ -n "$agent" ] && before=$(ticks "$agent")
       start=$(date +%s.%N)

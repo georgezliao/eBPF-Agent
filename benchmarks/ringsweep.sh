@@ -7,12 +7,14 @@ SIZES=${SIZES:-"16384 65536 262144 1048576 4194304 16777216"}
 DURATION=${DURATION:-5s}
 PORT=9103
 metric() { curl -s "127.0.0.1:$PORT/metrics" | awk -v m="$1" '$1 == m {print $2}'; }
+# The agent serves /metrics only after its probes are attached.
+ready() { until curl -sf "127.0.0.1:$PORT/metrics" >/dev/null; do sleep 0.1; done; }
 
 echo "ring_bytes,target_rate,achieved_ops_per_sec,events_delivered,events_dropped,drop_pct"
 for rate in $RATES; do
   for size in $SIZES; do
     bin/tracelens agent -listen 127.0.0.1:$PORT -export-all -ring "$size" >/dev/null 2>&1 & agent=$!
-    sleep 1
+    ready
     out=$(bin/loadgen -workers 2 -rate "$rate" -duration "$DURATION")
     sleep 0.5 # let the consumer drain what's left
     delivered=$(metric 'tracelens_syscalls_total{op="read"}')

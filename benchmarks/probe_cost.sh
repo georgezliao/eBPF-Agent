@@ -7,6 +7,8 @@ RATE=${RATE:-500000}
 DURATION=${DURATION:-5s}
 PORT=9102
 metric() { curl -s "127.0.0.1:$PORT/metrics" | awk -v m="$1" '$1 == m {print $2}'; }
+# The agent serves /metrics only after its probes are attached.
+ready() { until curl -sf "127.0.0.1:$PORT/metrics" >/dev/null; do sleep 0.1; done; }
 
 sysctl -qw kernel.bpf_stats_enabled=1
 trap 'sysctl -qw kernel.bpf_stats_enabled=0' EXIT
@@ -15,7 +17,7 @@ echo "mode,reads,bpf_runs,bpf_seconds,ns_per_run,bpf_ns_per_read"
 for mode in aggregated raw; do
   flags=; [ "$mode" = raw ] && flags=-export-all
   bin/tracelens agent -listen 127.0.0.1:$PORT $flags >/dev/null 2>&1 & agent=$!
-  sleep 1
+  ready
   runs0=$(metric tracelens_bpf_runs_total) secs0=$(metric tracelens_bpf_run_seconds_total)
   out=$(bin/loadgen -workers 2 -rate "$RATE" -duration "$DURATION")
   runs1=$(metric tracelens_bpf_runs_total) secs1=$(metric tracelens_bpf_run_seconds_total)
