@@ -63,6 +63,7 @@ type (
 type Probe struct {
 	coll  *ebpf.Collection
 	links []link.Link
+	gone  map[uint32]bool // processes ForgetExited found missing on its last call
 }
 
 // Open loads the BPF objects and attaches every program to the tracepoint named by its
@@ -83,7 +84,7 @@ func Open(ringBytes uint32) (*Probe, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load BPF objects: %w", err)
 	}
-	p := &Probe{coll: coll}
+	p := &Probe{coll: coll, gone: map[uint32]bool{}}
 
 	for name, ps := range spec.Programs {
 		l, err := attach(ps.SectionName, coll.Programs[name])
@@ -202,18 +203,32 @@ func (p *Probe) Lost() (events, stats uint64, err error) {
 	return events, stats, err
 }
 
-// ForgetExited deletes the stats of processes that no longer exist, from the kernel map
-// and from cur. Call it after the snapshot's values have been used: the kernel keeps an
-// exited process's counters until then, so its last interval isn't lost.
+// ForgetExited deletes the stats of processes that have exited, from the kernel map and
+// from cur. Call it once per snapshot, after the snapshot has been used. A process is
+// deleted on the second call that finds it gone, not the first: it may have made calls
+// between the snapshot and exiting, and those only show up in the next snapshot.
 func (p *Probe) ForgetExited(cur map[Key]Stats) error {
+	alive := map[uint32]bool{}
 	for k := range cur {
-		if _, err := os.Stat(fmt.Sprintf("/proc/%d", k.Tgid)); !errors.Is(err, os.ErrNotExist) {
+		if _, seen := alive[k.Tgid]; !seen {
+			_, err := os.Stat(fmt.Sprintf("/proc/%d", k.Tgid))
+			alive[k.Tgid] = !errors.Is(err, os.ErrNotExist)
+		}
+	}
+	for k := range cur {
+		if alive[k.Tgid] || !p.gone[k.Tgid] {
 			continue
 		}
 		if err := p.coll.Maps["stats"].Delete(k); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			return err
 		}
 		delete(cur, k)
+	}
+	clear(p.gone)
+	for pid, ok := range alive {
+		if !ok {
+			p.gone[pid] = true
+		}
 	}
 	return nil
 }

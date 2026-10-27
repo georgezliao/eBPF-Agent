@@ -213,11 +213,23 @@ func TestExitedProcessCountedThenForgotten(t *testing.T) {
 	if cur[key].Count == 0 {
 		t.Fatal("exited process's reads are gone before userspace read them")
 	}
+	// First call only notes the process is gone; its final calls could still be on
+	// their way into the next snapshot.
 	if err := p.ForgetExited(cur); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := cur[key]; ok {
-		t.Error("ForgetExited left the key in the snapshot")
+	if _, ok := cur[key]; !ok {
+		t.Fatal("first ForgetExited call already dropped the key")
+	}
+	next, err := p.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.ForgetExited(next); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := next[key]; ok {
+		t.Error("second ForgetExited call left the key in the snapshot")
 	}
 	again, err := p.Stats()
 	if err != nil {
