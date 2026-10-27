@@ -23,7 +23,7 @@ const keepLongest = 10
 type summary struct {
 	durs    map[probe.Op][]time.Duration
 	errs    map[probe.Op]int
-	longest []probe.Event // syscalls only, sorted, longest first
+	longest []probe.Event // syscalls only (runq waits would crowd them out), longest first
 }
 
 func newSummary() *summary {
@@ -37,7 +37,7 @@ func (s *summary) add(e probe.Event) {
 		s.errs[op]++
 	}
 	if op == probe.OpRunq {
-		return // longest calls lists syscalls only; runq waits would crowd them out
+		return
 	}
 	i := sort.Search(len(s.longest), func(i int) bool { return s.longest[i].DurationNs < e.DurationNs })
 	if i < keepLongest {
@@ -114,11 +114,13 @@ func capture(ctx context.Context, p *probe.Probe, tgid uint32, dur, minDur time.
 	if err := p.SetTarget(tgid, minDur); err != nil {
 		return nil, err
 	}
-	defer p.SetTarget(0, 0)
-
 	ctx, cancel := context.WithTimeout(ctx, dur)
 	defer cancel()
-	go func() { <-ctx.Done(); rd.Close() }()
+	go func() {
+		<-ctx.Done()
+		p.SetTarget(0, 0)
+		rd.Close()
+	}()
 
 	s := newSummary()
 	for {
@@ -133,11 +135,29 @@ func capture(ctx context.Context, p *probe.Probe, tgid uint32, dur, minDur time.
 		if err != nil {
 			return nil, err
 		}
+		if e.Tgid != tgid {
+			continue // left in the ring by an earlier capture of another process
+		}
 		s.add(e)
 		if enc != nil {
 			enc.Encode(jsonEvent{e.TsNs, e.DurationNs, probe.Op(e.Op).String(), e.Ret, e.Tgid, e.Tid, e.CommString()})
 		}
 	}
+}
+
+// captureCountingDrops runs capture and also returns how many events the kernel dropped
+// during it.
+func captureCountingDrops(ctx context.Context, p *probe.Probe, tgid uint32, dur, minDur time.Duration, out string) (*summary, uint64, error) {
+	before, _, err := p.Lost()
+	if err != nil {
+		return nil, 0, err
+	}
+	s, err := capture(ctx, p, tgid, dur, minDur, out)
+	if err != nil {
+		return nil, 0, err
+	}
+	after, _, err := p.Lost()
+	return s, after - before, err
 }
 
 func runTrace(ctx context.Context, args []string) error {
@@ -158,11 +178,7 @@ func runTrace(ctx context.Context, args []string) error {
 	defer p.Close()
 
 	fmt.Printf("Tracing PID %d (%s) for %s...\n", *pid, comm(uint32(*pid)), *dur)
-	s, err := capture(ctx, p, uint32(*pid), *dur, *minDur, *out)
-	if err != nil {
-		return err
-	}
-	drops, _, err := p.Lost()
+	s, drops, err := captureCountingDrops(ctx, p, uint32(*pid), *dur, *minDur, *out)
 	if err != nil {
 		return err
 	}
