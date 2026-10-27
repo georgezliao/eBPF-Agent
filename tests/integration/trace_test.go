@@ -1,3 +1,5 @@
+//go:build linux
+
 package integration
 
 import (
@@ -11,7 +13,9 @@ import (
 	"github.com/georgezliao/tracelens/internal/probe"
 )
 
-// drain reads events until none arrive for 200ms.
+// drain returns the events that arrive within 300ms. It can't wait for the stream to go
+// quiet: when the test traces itself, every Read wakes this goroutine, and that wakeup is
+// itself a new run-queue event for the traced process.
 func drain(t *testing.T, p *probe.Probe) []probe.Event {
 	t.Helper()
 	rd, err := p.Events()
@@ -19,9 +23,9 @@ func drain(t *testing.T, p *probe.Probe) []probe.Event {
 		t.Fatal(err)
 	}
 	defer rd.Close()
+	rd.SetDeadline(time.Now().Add(300 * time.Millisecond))
 	var out []probe.Event
 	for {
-		rd.SetDeadline(time.Now().Add(200 * time.Millisecond))
 		rec, err := rd.Read()
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			return out

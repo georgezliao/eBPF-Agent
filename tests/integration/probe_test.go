@@ -1,9 +1,13 @@
+//go:build linux
+
 // Integration tests load the real BPF programs, so they need Linux and root.
 // Run with `make itest`.
 package integration
 
 import (
 	"os"
+	"os/exec"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -156,4 +160,38 @@ func TestFsyncAndFdatasyncShareAnOp(t *testing.T) {
 	if got := after.Count - before.Count; got != 6 {
 		t.Errorf("fsync count delta = %d, want 6", got)
 	}
+}
+
+func TestRunqDelayUnderCPUContention(t *testing.T) {
+	p := openProbe(t)
+
+	// Twice as many busy processes as CPUs: each should spend about half its time
+	// runnable but waiting for a CPU.
+	n := 2 * runtime.NumCPU()
+	const spin = time.Second
+	var spinners []*exec.Cmd
+	for range n {
+		c := exec.Command("sh", "-c", "while :; do :; done")
+		if err := c.Start(); err != nil {
+			t.Fatal(err)
+		}
+		spinners = append(spinners, c)
+	}
+	time.Sleep(spin)
+
+	all, err := p.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var waited time.Duration
+	for _, c := range spinners {
+		waited += time.Duration(all[probe.Key{Tgid: uint32(c.Process.Pid), Op: uint32(probe.OpRunq)}].TotalNs)
+		c.Process.Kill()
+		c.Wait()
+	}
+	// Expect ~n*spin/2 in total; a quarter of that leaves room for a noisy VM.
+	if want := time.Duration(n) * spin / 4; waited < want {
+		t.Errorf("spinners waited %v in the run queue, want >= %v", waited, want)
+	}
+	t.Logf("%d spinners on %d CPUs for %v: %v total run-queue wait", n, runtime.NumCPU(), spin, waited)
 }
