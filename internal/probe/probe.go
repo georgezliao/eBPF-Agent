@@ -16,7 +16,6 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
-	"golang.org/x/sys/unix"
 )
 
 // Op is a traced syscall, matching enum op in tracelens.bpf.c.
@@ -151,6 +150,26 @@ func (p *Probe) SetTarget(tgid uint32, minDur time.Duration) error {
 	return p.coll.Maps["config"].Put(uint32(0), cfg)
 }
 
+// ExportAll switches to the benchmark's raw mode: every call of every process goes to the
+// ring buffer and nothing is aggregated in the kernel.
+func (p *Probe) ExportAll() error {
+	return p.coll.Maps["config"].Put(uint32(0), tracelensTraceConfig{ExportAll: 1})
+}
+
+// RunStats returns the combined run count and run time of all BPF programs. The kernel
+// only records them while the sysctl kernel.bpf_stats_enabled is 1; otherwise both are 0.
+func (p *Probe) RunStats() (runs uint64, runtime time.Duration, err error) {
+	for _, prog := range p.coll.Programs {
+		st, err := prog.Stats()
+		if err != nil {
+			return 0, 0, err
+		}
+		runs += st.RunCount
+		runtime += st.Runtime
+	}
+	return runs, runtime, nil
+}
+
 // Events opens a reader on the event ring buffer. Close it to unblock a pending Read.
 func (p *Probe) Events() (*ringbuf.Reader, error) {
 	return ringbuf.NewReader(p.coll.Maps["events"])
@@ -218,10 +237,17 @@ func (e *Event) CommString() string {
 	return string(b)
 }
 
+// Linux errno values. Not unix.EAGAIN etc.: those follow the build host, and on macOS
+// EAGAIN is 35.
+const (
+	eagain      = 11
+	einprogress = 115
+)
+
 // Failed reports whether a syscall return value is a real failure, using the same rule as
 // the kernel-side error counter: EAGAIN and EINPROGRESS are normal for non-blocking I/O.
 func Failed(ret int64) bool {
-	return ret < 0 && ret != -int64(unix.EAGAIN) && ret != -int64(unix.EINPROGRESS)
+	return ret < 0 && ret != -eagain && ret != -einprogress
 }
 
 // Delta returns the activity between two Stats snapshots, per key, skipping idle keys. A
