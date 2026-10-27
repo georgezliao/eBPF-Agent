@@ -89,6 +89,8 @@ func fmtDur(d time.Duration) string {
 	switch {
 	case d == 0:
 		return "-"
+	case d < time.Microsecond:
+		return d.String()
 	case d < time.Millisecond:
 		return d.Round(time.Microsecond).String()
 	default:
