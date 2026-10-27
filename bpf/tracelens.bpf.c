@@ -84,6 +84,9 @@ struct {
 	__type(value, __u64);
 } runnable SEC(".maps");
 
+// Up to NUM_OPS keys per live process (kernel threads included, via runq). The value is
+// 352 bytes per CPU, so 8192 entries is ~2.9 MB per CPU. When it's full, new processes
+// aren't tracked and lost[LOST_STATS] counts the misses.
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
 	__uint(max_entries, 8192);
@@ -96,13 +99,23 @@ struct {
 	__uint(max_entries, 256 * 1024); // userspace may resize before load
 } events SEC(".maps");
 
-// Events that didn't fit in the ring buffer.
+enum { LOST_EVENTS, LOST_STATS, NUM_LOST };
+
+// What couldn't be recorded: events that didn't fit in the ring buffer, and updates for
+// keys that didn't fit in the stats map.
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 1);
+	__uint(max_entries, NUM_LOST);
 	__type(key, __u32);
 	__type(value, __u64);
-} drops SEC(".maps");
+} lost SEC(".maps");
+
+static __always_inline void count_lost(__u32 kind)
+{
+	__u64 *n = bpf_map_lookup_elem(&lost, &kind);
+	if (n)
+		(*n)++;
+}
 
 static __always_inline __u32 log2_slot(__u64 v)
 {
@@ -132,8 +145,10 @@ static __always_inline void record(__u32 tgid, __u32 op, __u64 dur, __s64 ret)
 		static const struct op_stats zero;
 		bpf_map_update_elem(&stats, &key, &zero, BPF_NOEXIST);
 		st = bpf_map_lookup_elem(&stats, &key);
-		if (!st)
-			return; // map full
+		if (!st) {
+			count_lost(LOST_STATS);
+			return;
+		}
 	}
 	// Per-CPU value: no other CPU writes this copy, so plain increments are safe.
 	st->count++;
@@ -161,9 +176,7 @@ static __always_inline void emit(__u32 tgid, __u32 tid, __u32 op, __u64 now, __u
 
 	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e) {
-		__u64 *n = bpf_map_lookup_elem(&drops, &zero);
-		if (n)
-			(*n)++;
+		count_lost(LOST_EVENTS);
 		return;
 	}
 	e->ts_ns = now;
@@ -241,8 +254,11 @@ int sched_switch(__u64 *ctx)
 	struct task_struct *prev = (void *)ctx[1], *next = (void *)ctx[2];
 	__u32 prev_state = (__u32)ctx[3];
 
-	// A preempted task (state TASK_RUNNING, 0) goes straight back on the run queue.
-	if (prev_state == 0)
+	// prev stays on the run queue if it was preempted or is still TASK_RUNNING (0).
+	// Checking prev_state alone misses a task preempted between setting
+	// TASK_INTERRUPTIBLE and calling schedule(): non-zero state, still queued.
+	bool preempt = ctx[0];
+	if (preempt || prev_state == 0)
 		mark_runnable(prev->pid);
 
 	__u32 tid = next->pid;

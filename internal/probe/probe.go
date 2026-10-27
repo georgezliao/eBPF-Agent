@@ -40,7 +40,7 @@ func (o Op) String() string {
 	return fmt.Sprintf("op%d", uint32(o))
 }
 
-// Ops lists every traced syscall in display order.
+// Ops lists every op in display order, runq last.
 var Ops = []Op{OpRead, OpWrite, OpOpenat, OpConnect, OpFsync, OpRunq}
 
 type (
@@ -56,8 +56,8 @@ type Probe struct {
 }
 
 // Open loads the BPF objects and attaches every program to the tracepoint named by its
-// ELF section ("tracepoint/<group>/<event>" or "tp_btf/<event>"). ringBytes sizes the event ring buffer (a power of two multiple of the page
-// size); 0 keeps the default.
+// ELF section ("tracepoint/<group>/<event>" or "tp_btf/<event>"). ringBytes sizes the
+// event ring buffer (a power-of-two multiple of the page size); 0 keeps the default.
 func Open(ringBytes uint32) (*Probe, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("remove memlock limit: %w", err)
@@ -145,17 +145,25 @@ func (p *Probe) Events() (*ringbuf.Reader, error) {
 	return ringbuf.NewReader(p.coll.Maps["events"])
 }
 
-// Drops returns how many events the kernel discarded because the ring buffer was full.
-func (p *Probe) Drops() (uint64, error) {
-	var perCPU []uint64
-	if err := p.coll.Maps["drops"].Lookup(uint32(0), &perCPU); err != nil {
-		return 0, err
+// Lost reports what the kernel couldn't record: trace events dropped because the ring
+// buffer was full, and stats updates dropped because the stats map was full.
+func (p *Probe) Lost() (events, stats uint64, err error) {
+	sum := func(kind uint32) (uint64, error) {
+		var perCPU []uint64
+		if err := p.coll.Maps["lost"].Lookup(kind, &perCPU); err != nil {
+			return 0, err
+		}
+		var n uint64
+		for _, v := range perCPU {
+			n += v
+		}
+		return n, nil
 	}
-	var n uint64
-	for _, v := range perCPU {
-		n += v
+	if events, err = sum(0); err != nil {
+		return 0, 0, err
 	}
-	return n, nil
+	stats, err = sum(1)
+	return events, stats, err
 }
 
 // Decode parses one ring buffer record.

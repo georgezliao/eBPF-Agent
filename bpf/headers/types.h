@@ -9,12 +9,13 @@ typedef int __s32;
 typedef unsigned int __u32;
 typedef long long __s64;
 typedef unsigned long long __u64;
+typedef _Bool bool;
+// bpf_helper_defs.h refers to these in helper prototypes we don't call.
 typedef __u16 __be16;
 typedef __u32 __be32;
 typedef __u32 __wsum;
 
 enum bpf_map_type {
-	BPF_MAP_TYPE_HASH = 1,
 	BPF_MAP_TYPE_ARRAY = 2,
 	BPF_MAP_TYPE_PERCPU_HASH = 5,
 	BPF_MAP_TYPE_PERCPU_ARRAY = 6,

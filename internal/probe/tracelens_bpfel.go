@@ -53,8 +53,8 @@ type tracelensTraceConfig struct {
 const (
 	tracelensMapActive          = "active"
 	tracelensMapConfig          = "config"
-	tracelensMapDrops           = "drops"
 	tracelensMapEvents          = "events"
+	tracelensMapLost            = "lost"
 	tracelensMapRunnable        = "runnable"
 	tracelensMapStats           = "stats"
 	tracelensProgEnterConnect   = "enter_connect"
@@ -142,8 +142,8 @@ type tracelensProgramSpecs struct {
 type tracelensMapSpecs struct {
 	Active   *ebpf.MapSpec `ebpf:"active"`
 	Config   *ebpf.MapSpec `ebpf:"config"`
-	Drops    *ebpf.MapSpec `ebpf:"drops"`
 	Events   *ebpf.MapSpec `ebpf:"events"`
+	Lost     *ebpf.MapSpec `ebpf:"lost"`
 	Runnable *ebpf.MapSpec `ebpf:"runnable"`
 	Stats    *ebpf.MapSpec `ebpf:"stats"`
 }
@@ -177,8 +177,8 @@ func (o *tracelensObjects) Close() error {
 type tracelensMaps struct {
 	Active   *ebpf.Map `ebpf:"active"`
 	Config   *ebpf.Map `ebpf:"config"`
-	Drops    *ebpf.Map `ebpf:"drops"`
 	Events   *ebpf.Map `ebpf:"events"`
+	Lost     *ebpf.Map `ebpf:"lost"`
 	Runnable *ebpf.Map `ebpf:"runnable"`
 	Stats    *ebpf.Map `ebpf:"stats"`
 }
@@ -187,8 +187,8 @@ func (m *tracelensMaps) Close() error {
 	return _TracelensClose(
 		m.Active,
 		m.Config,
-		m.Drops,
 		m.Events,
+		m.Lost,
 		m.Runnable,
 		m.Stats,
 	)
