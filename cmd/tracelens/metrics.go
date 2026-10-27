@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"math/bits"
 	"net/http"
 	"sync"
 
@@ -36,8 +37,29 @@ func (m *metrics) add(delta map[probe.Key]probe.Stats) {
 	}
 }
 
+// addEvent folds one event into the totals the same way the kernel's record() would, for
+// raw mode where the kernel doesn't aggregate.
+func (m *metrics) addEvent(e *probe.Event) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := &m.totals[e.Op]
+	t.Count++
+	t.TotalNs += e.DurationNs
+	t.Hist[min(max(bits.Len64(e.DurationNs)-1, 0), len(t.Hist)-1)]++
+	if probe.Failed(e.Ret) {
+		t.Errors++
+	} else if e.Ret > 0 && (probe.Op(e.Op) == probe.OpRead || probe.Op(e.Op) == probe.OpWrite) {
+		t.Bytes += uint64(e.Ret)
+	}
+}
+
 func (m *metrics) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	events, stats, err := m.probe.Lost()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	runs, runtime, err := m.probe.RunStats()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -47,6 +69,12 @@ func (m *metrics) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	m.mu.Unlock()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	writeMetrics(w, &totals, events, stats)
+	fmt.Fprintln(w, "# HELP tracelens_bpf_runs_total BPF program runs (0 unless sysctl kernel.bpf_stats_enabled=1).")
+	fmt.Fprintln(w, "# TYPE tracelens_bpf_runs_total counter")
+	fmt.Fprintf(w, "tracelens_bpf_runs_total %d\n", runs)
+	fmt.Fprintln(w, "# HELP tracelens_bpf_run_seconds_total Time spent in BPF programs (0 unless kernel.bpf_stats_enabled=1).")
+	fmt.Fprintln(w, "# TYPE tracelens_bpf_run_seconds_total counter")
+	fmt.Fprintf(w, "tracelens_bpf_run_seconds_total %g\n", runtime.Seconds())
 }
 
 // writeMetrics renders the Prometheus text format. Run-queue delay gets its own family

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/cilium/ebpf/ringbuf"
 	"github.com/georgezliao/tracelens/internal/hist"
 	"github.com/georgezliao/tracelens/internal/probe"
 )
@@ -41,6 +42,29 @@ func slowest(delta map[probe.Key]probe.Stats, op probe.Op, threshold time.Durati
 	return pid, worst, worst > 0
 }
 
+// consumeAll reads every event until ctx is done and folds it into m.
+func consumeAll(ctx context.Context, p *probe.Probe, m *metrics) error {
+	rd, err := p.Events()
+	if err != nil {
+		return err
+	}
+	go func() { <-ctx.Done(); rd.Close() }()
+	for {
+		rec, err := rd.Read()
+		if errors.Is(err, ringbuf.ErrClosed) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		e, err := probe.Decode(rec.RawSample)
+		if err != nil {
+			return err
+		}
+		m.addEvent(&e)
+	}
+}
+
 func runAgent(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("agent", flag.ExitOnError)
 	listen := fs.String("listen", ":9090", "address for the Prometheus /metrics endpoint")
@@ -49,19 +73,36 @@ func runAgent(ctx context.Context, args []string) error {
 	triggerOp := fs.String("trigger-op", "read", "op watched by -trigger")
 	captureFor := fs.Duration("capture", 10*time.Second, "length of a triggered capture")
 	dir := fs.String("dir", os.TempDir(), "directory for capture files")
+	exportAll := fs.Bool("export-all", false, "benchmark raw mode: stream every call to userspace and aggregate there, not in the kernel")
+	ring := fs.Uint("ring", 0, "ring buffer bytes, a power-of-two number of pages (0 = 256 KiB)")
 	fs.Parse(args)
+	if *exportAll && *trigger != 0 {
+		return errors.New("agent: -export-all and -trigger both need the ring buffer")
+	}
 	op, err := probe.ParseOp(*triggerOp)
 	if err != nil {
 		return err
 	}
 
-	p, err := probe.Open(0)
+	p, err := probe.Open(uint32(*ring))
 	if err != nil {
 		return err
 	}
 	defer p.Close()
 
 	m := &metrics{probe: p}
+	if *exportAll {
+		if err := p.ExportAll(); err != nil {
+			return err
+		}
+		done := make(chan error, 1)
+		go func() { done <- consumeAll(ctx, p, m) }()
+		defer func() {
+			if err := <-done; err != nil {
+				log.Printf("consumer: %v", err)
+			}
+		}()
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m)
 	srv := &http.Server{Addr: *listen, Handler: mux}

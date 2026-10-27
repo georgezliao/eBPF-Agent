@@ -41,3 +41,17 @@ func TestMetricsAccumulateAcrossProcesses(t *testing.T) {
 		t.Error("runq should not appear as a syscall op")
 	}
 }
+
+func TestAddEventMatchesKernelBuckets(t *testing.T) {
+	m := &metrics{}
+	m.addEvent(&probe.Event{Op: uint32(probe.OpRead), DurationNs: 0, Ret: 10})
+	m.addEvent(&probe.Event{Op: uint32(probe.OpRead), DurationNs: 1500, Ret: -int64(9)})     // EBADF
+	m.addEvent(&probe.Event{Op: uint32(probe.OpRead), DurationNs: 1 << 50, Ret: -int64(11)}) // EAGAIN
+	r := m.totals[probe.OpRead]
+	if r.Count != 3 || r.Errors != 1 || r.Bytes != 10 {
+		t.Errorf("totals = %+v", r)
+	}
+	if r.Hist[0] != 1 || r.Hist[10] != 1 || r.Hist[39] != 1 {
+		t.Errorf("buckets: slot0=%d slot10=%d slot39=%d", r.Hist[0], r.Hist[10], r.Hist[39])
+	}
+}
