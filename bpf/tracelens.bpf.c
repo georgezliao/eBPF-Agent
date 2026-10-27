@@ -8,6 +8,8 @@
 #include "headers/common.h"
 
 #define HIST_SLOTS 40 // log2(ns) buckets; slot 39 starts at ~9 minutes
+#define EAGAIN 11
+#define EINPROGRESS 115
 
 enum op { OP_READ, OP_WRITE, OP_OPENAT, OP_CONNECT, NUM_OPS };
 
@@ -32,7 +34,7 @@ struct stats_key {
 
 struct op_stats {
 	__u64 count;
-	__u64 errors;
+	__u64 errors; // excludes EAGAIN and EINPROGRESS, see record()
 	__u64 bytes; // bytes the syscall returned (read/write only), not device I/O
 	__u64 total_ns;
 	__u64 hist[HIST_SLOTS];
@@ -120,7 +122,9 @@ static __always_inline void record(__u32 tgid, __u32 op, __u64 dur, __s64 ret)
 	st->count++;
 	st->total_ns += dur;
 	st->hist[log2_slot(dur)]++;
-	if (ret < 0)
+	// Non-blocking I/O returns EAGAIN/EINPROGRESS as a normal step (Go's netpoller does
+	// this for every socket and pipe), so they aren't failures.
+	if (ret < 0 && ret != -EAGAIN && ret != -EINPROGRESS)
 		st->errors++;
 	else if (op == OP_READ || op == OP_WRITE)
 		st->bytes += ret;

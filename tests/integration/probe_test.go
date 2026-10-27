@@ -97,3 +97,30 @@ func TestFailedReadsCountAsErrors(t *testing.T) {
 		t.Errorf("error delta = %d, want >= 5", got)
 	}
 }
+
+func TestWouldBlockIsNotAnError(t *testing.T) {
+	p := openProbe(t)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	fd := int(r.Fd())
+	syscall.SetNonblock(fd, true)
+
+	before := readStats(t, p, probe.OpRead)
+	buf := make([]byte, 1)
+	for range 5 {
+		if _, err := syscall.Read(fd, buf); err != syscall.EAGAIN {
+			t.Fatalf("want EAGAIN, got %v", err)
+		}
+	}
+	after := readStats(t, p, probe.OpRead)
+	if after.Count-before.Count < 5 {
+		t.Errorf("count delta = %d, want >= 5", after.Count-before.Count)
+	}
+	if after.Errors != before.Errors {
+		t.Errorf("EAGAIN counted as error: delta %d", after.Errors-before.Errors)
+	}
+}
