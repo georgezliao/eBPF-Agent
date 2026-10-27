@@ -34,27 +34,18 @@ func (r procRow) syscalls() float64 {
 	return t
 }
 
-// interval turns two cumulative snapshots into per-process rates. Keys missing from prev
-// are new since the last sample and count in full.
-func interval(prev, cur map[probe.Key]probe.Stats, secs float64) []procRow {
+// interval turns one sampling interval's activity into per-process rates.
+func interval(delta map[probe.Key]probe.Stats, secs float64) []procRow {
 	byPID := map[uint32]*procRow{}
-	for k, c := range cur {
-		p := prev[k]
-		if c.Count < p.Count || c.Errors < p.Errors { // process exited and its PID was reused
-			p = probe.Stats{}
-		}
-		n := c.Count - p.Count
-		if n == 0 {
-			continue
-		}
+	for k, d := range delta {
 		r := byPID[k.Tgid]
 		if r == nil {
 			r = &procRow{tgid: k.Tgid}
 			byPID[k.Tgid] = r
 		}
-		r.perSec[k.Op] = float64(n) / secs
-		r.errSec += float64(c.Errors-p.Errors) / secs
-		r.p99[k.Op] = hist.Percentile(hist.Sub(c.Hist[:], p.Hist[:]), 0.99)
+		r.perSec[k.Op] = float64(d.Count) / secs
+		r.errSec += float64(d.Errors) / secs
+		r.p99[k.Op] = hist.Percentile(d.Hist[:], 0.99)
 	}
 	rows := make([]procRow, 0, len(byPID))
 	for _, r := range byPID {
@@ -135,7 +126,7 @@ func runTop(ctx context.Context, args []string) error {
 				return err
 			}
 			fmt.Printf("\n%s\n", now.Format("15:04:05"))
-			printTop(os.Stdout, interval(prev, cur, now.Sub(last).Seconds()), *limit)
+			printTop(os.Stdout, interval(probe.Delta(prev, cur), now.Sub(last).Seconds()), *limit)
 			prev, last = cur, now
 		}
 	}

@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/georgezliao/tracelens/internal/hist"
 	"github.com/georgezliao/tracelens/internal/probe"
 )
 
@@ -88,7 +87,7 @@ func TestSlowReadsLandInRightBucket(t *testing.T) {
 		slow += after.Hist[i] - before.Hist[i]
 	}
 	if slow < n {
-		t.Errorf("reads >= 4ms = %d, want >= %d; hist delta %v", slow, n, hist.Sub(after.Hist[:], before.Hist[:]))
+		t.Errorf("reads >= 4ms = %d, want >= %d", slow, n)
 	}
 }
 

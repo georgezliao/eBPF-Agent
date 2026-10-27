@@ -28,15 +28,3 @@ func Percentile(h []uint64, q float64) time.Duration {
 	}
 	return time.Duration(uint64(1) << len(h))
 }
-
-// Sub returns a - b element-wise, for turning two cumulative snapshots into an interval.
-// Slots that went backwards (the key was deleted and recreated) count as 0.
-func Sub(a, b []uint64) []uint64 {
-	out := make([]uint64, len(a))
-	for i := range a {
-		if a[i] > b[i] {
-			out[i] = a[i] - b[i]
-		}
-	}
-	return out
-}

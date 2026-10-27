@@ -182,3 +182,43 @@ func (e *Event) CommString() string {
 func Failed(ret int64) bool {
 	return ret < 0 && ret != -int64(unix.EAGAIN) && ret != -int64(unix.EINPROGRESS)
 }
+
+// Delta returns the activity between two Stats snapshots, per key, skipping idle keys. A
+// key whose counters went backwards was deleted and recreated in between (its process
+// exited and the PID was reused), so its current values count in full.
+func Delta(prev, cur map[Key]Stats) map[Key]Stats {
+	out := make(map[Key]Stats, len(cur))
+	for k, c := range cur {
+		p, ok := prev[k]
+		if ok && !covers(c, p) {
+			p = Stats{}
+		}
+		if c.Count == p.Count {
+			continue
+		}
+		d := Stats{
+			Count:   c.Count - p.Count,
+			Errors:  c.Errors - p.Errors,
+			Bytes:   c.Bytes - p.Bytes,
+			TotalNs: c.TotalNs - p.TotalNs,
+		}
+		for i := range d.Hist {
+			d.Hist[i] = c.Hist[i] - p.Hist[i]
+		}
+		out[k] = d
+	}
+	return out
+}
+
+// covers reports whether every counter in c is at least the one in p.
+func covers(c, p Stats) bool {
+	if c.Count < p.Count || c.Errors < p.Errors || c.Bytes < p.Bytes || c.TotalNs < p.TotalNs {
+		return false
+	}
+	for i := range c.Hist {
+		if c.Hist[i] < p.Hist[i] {
+			return false
+		}
+	}
+	return true
+}
