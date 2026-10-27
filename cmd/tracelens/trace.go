@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -108,7 +109,11 @@ func capture(ctx context.Context, p *probe.Probe, tgid uint32, dur, minDur time.
 			return nil, err
 		}
 		defer f.Close()
-		enc = json.NewEncoder(f)
+		// Buffered: one write(2) per event made the capturing agent the busiest writer on
+		// the machine in the demo.
+		w := bufio.NewWriterSize(f, 64*1024)
+		defer w.Flush()
+		enc = json.NewEncoder(w)
 	}
 
 	if err := p.SetTarget(tgid, minDur); err != nil {
