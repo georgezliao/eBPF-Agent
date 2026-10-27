@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"os"
+	"runtime"
 	"slices"
 	"sync"
 	"syscall"
@@ -66,6 +67,7 @@ func main() {
 // share of calls back to back, then sleeps to the next slot; a slot that falls behind
 // isn't made up later, so the achieved rate shows when the target is out of reach.
 func worker(deadline time.Time, rate int) (uint64, []time.Duration) {
+	runtime.LockOSThread()
 	fd, err := syscall.Open("/dev/zero", syscall.O_RDONLY, 0)
 	if err != nil {
 		panic(err)
