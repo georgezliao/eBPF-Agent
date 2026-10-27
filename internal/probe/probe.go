@@ -40,6 +40,16 @@ func (o Op) String() string {
 	return fmt.Sprintf("op%d", uint32(o))
 }
 
+// ParseOp returns the op with the given name, as printed by Op.String.
+func ParseOp(name string) (Op, error) {
+	for i, n := range opNames {
+		if n == name {
+			return Op(i), nil
+		}
+	}
+	return 0, fmt.Errorf("unknown op %q (want one of %s)", name, strings.Join(opNames, ", "))
+}
+
 // Ops lists every op in display order, runq last.
 var Ops = []Op{OpRead, OpWrite, OpOpenat, OpConnect, OpFsync, OpRunq}
 
