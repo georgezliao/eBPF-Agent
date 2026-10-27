@@ -7,10 +7,14 @@ LLVM ?= /opt/homebrew/opt/llvm/bin
 GOARCH ?= $(shell go env GOARCH)
 LINUX = GOOS=linux GOARCH=$(GOARCH) CGO_ENABLED=0
 
-.PHONY: generate build check itest clean
+.PHONY: generate generated build check itest clean
 
 generate:
 	PATH="$(LLVM):$$PATH" go generate ./...
+
+# Fails if the committed BPF objects don't match bpf/*.c (needs clang).
+generated: generate
+	git diff --exit-code -- internal/probe
 
 build:
 	$(LINUX) go build -o bin/ ./cmd/...
