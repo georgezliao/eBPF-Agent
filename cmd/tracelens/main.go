@@ -13,6 +13,7 @@ const usage = `usage: tracelens <command> [flags]
 
 commands:
   top     per-process syscall rates and p99 latency, refreshed every interval
+  trace   record every syscall of one process for a while and summarize it
 `
 
 func main() {
@@ -27,6 +28,8 @@ func main() {
 	switch os.Args[1] {
 	case "top":
 		err = runTop(ctx, os.Args[2:])
+	case "trace":
+		err = runTrace(ctx, os.Args[2:])
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
