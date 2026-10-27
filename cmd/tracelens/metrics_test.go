@@ -29,7 +29,7 @@ func TestMetricsAccumulateAcrossProcesses(t *testing.T) {
 		`tracelens_syscall_duration_seconds_bucket{op="read",le="0.002097152"} 6`,
 		`tracelens_syscall_duration_seconds_bucket{op="read",le="+Inf"} 6`,
 		`tracelens_syscall_duration_seconds_sum{op="read"} 2`,
-		`tracelens_runq_delay_seconds_count 0`,
+		`tracelens_runq_delay_seconds_count{op="runq"} 0`,
 		`tracelens_events_dropped_total 7`,
 		`tracelens_stats_dropped_total 3`,
 	} {
@@ -37,7 +37,7 @@ func TestMetricsAccumulateAcrossProcesses(t *testing.T) {
 			t.Errorf("missing line %q", want)
 		}
 	}
-	if strings.Contains(out, `op="runq"`) {
+	if strings.Contains(out, `tracelens_syscalls_total{op="runq"}`) {
 		t.Error("runq should not appear as a syscall op")
 	}
 }

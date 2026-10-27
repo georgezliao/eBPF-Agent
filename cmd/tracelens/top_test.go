@@ -6,14 +6,14 @@ import (
 	"github.com/georgezliao/tracelens/internal/probe"
 )
 
-func TestInterval(t *testing.T) {
+func TestRates(t *testing.T) {
 	delta := map[probe.Key]probe.Stats{
 		{Tgid: 10, Op: uint32(probe.OpRead)}:  {Count: 200, Errors: 4},
 		{Tgid: 10, Op: uint32(probe.OpWrite)}: {Count: 20},
 		{Tgid: 10, Op: uint32(probe.OpRunq)}:  {Count: 500},
 		{Tgid: 20, Op: uint32(probe.OpRead)}:  {Count: 300},
 	}
-	rows := interval(delta, 2)
+	rows := rates(delta, 2)
 	if len(rows) != 2 {
 		t.Fatalf("got %d rows, want 2: %+v", len(rows), rows)
 	}

@@ -4,22 +4,21 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 
 	"github.com/georgezliao/tracelens/internal/probe"
 )
 
 // metrics holds system-wide per-op totals for the Prometheus endpoint. Totals are built
-// from interval deltas rather than read straight from the kernel map, because the map
-// forgets a process when it exits and the sums would go backwards.
+// from interval deltas rather than read straight from the kernel map, because the agent
+// deletes exited processes from the map and the sums would go backwards.
 //
 // Labels are op only. Per-PID labels would create a new series for every process that
 // ever ran; use `top` or `trace` for per-process detail.
 type metrics struct {
 	mu     sync.Mutex
 	totals [probe.NumOps]probe.Stats
-	lost   func() (events, stats uint64, err error)
+	probe  *probe.Probe
 }
 
 func (m *metrics) add(delta map[probe.Key]probe.Stats) {
@@ -38,7 +37,7 @@ func (m *metrics) add(delta map[probe.Key]probe.Stats) {
 }
 
 func (m *metrics) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
-	events, stats, err := m.lost()
+	events, stats, err := m.probe.Lost()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -50,10 +49,10 @@ func (m *metrics) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	writeMetrics(w, &totals, events, stats)
 }
 
-// writeMetrics renders the Prometheus text format. Syscall ops and run-queue delay go in
-// separate families since runq isn't a syscall.
+// writeMetrics renders the Prometheus text format. Run-queue delay gets its own family
+// (still labelled op="runq") since it isn't a syscall.
 func writeMetrics(w io.Writer, totals *[probe.NumOps]probe.Stats, lostEvents, lostStats uint64) {
-	fmt.Fprintln(w, "# HELP tracelens_syscalls_total Completed syscalls.")
+	fmt.Fprintln(w, "# HELP tracelens_syscalls_total Completed read, write, openat, connect and fsync (incl. fdatasync) syscalls.")
 	fmt.Fprintln(w, "# TYPE tracelens_syscalls_total counter")
 	for _, op := range syscallOps() {
 		fmt.Fprintf(w, "tracelens_syscalls_total{op=%q} %d\n", op, totals[op].Count)
@@ -71,11 +70,11 @@ func writeMetrics(w io.Writer, totals *[probe.NumOps]probe.Stats, lostEvents, lo
 	fmt.Fprintln(w, "# HELP tracelens_syscall_duration_seconds Time from syscall entry to exit.")
 	fmt.Fprintln(w, "# TYPE tracelens_syscall_duration_seconds histogram")
 	for _, op := range syscallOps() {
-		writeHist(w, "tracelens_syscall_duration_seconds", fmt.Sprintf("op=%q", op), &totals[op])
+		writeHist(w, "tracelens_syscall_duration_seconds", op, &totals[op])
 	}
 	fmt.Fprintln(w, "# HELP tracelens_runq_delay_seconds Time a thread spent runnable before getting a CPU.")
 	fmt.Fprintln(w, "# TYPE tracelens_runq_delay_seconds histogram")
-	writeHist(w, "tracelens_runq_delay_seconds", "", &totals[probe.OpRunq])
+	writeHist(w, "tracelens_runq_delay_seconds", probe.OpRunq, &totals[probe.OpRunq])
 	fmt.Fprintln(w, "# HELP tracelens_events_dropped_total Trace events lost because the ring buffer was full.")
 	fmt.Fprintln(w, "# TYPE tracelens_events_dropped_total counter")
 	fmt.Fprintf(w, "tracelens_events_dropped_total %d\n", lostEvents)
@@ -84,22 +83,16 @@ func writeMetrics(w io.Writer, totals *[probe.NumOps]probe.Stats, lostEvents, lo
 	fmt.Fprintf(w, "tracelens_stats_dropped_total %d\n", lostStats)
 }
 
-func writeHist(w io.Writer, name, labels string, s *probe.Stats) {
-	braces := func(extra string) string {
-		if l := strings.Trim(labels+","+extra, ","); l != "" {
-			return "{" + l + "}"
-		}
-		return ""
-	}
+func writeHist(w io.Writer, name string, op probe.Op, s *probe.Stats) {
 	var cum uint64
 	for i, n := range s.Hist[:len(s.Hist)-1] {
 		cum += n
 		le := float64(uint64(1)<<(i+1)) / 1e9 // slot i holds [2^i, 2^(i+1)) ns
-		fmt.Fprintf(w, "%s_bucket%s %d\n", name, braces(fmt.Sprintf("le=\"%g\"", le)), cum)
+		fmt.Fprintf(w, "%s_bucket{op=%q,le=\"%g\"} %d\n", name, op, le, cum)
 	}
-	fmt.Fprintf(w, "%s_bucket%s %d\n", name, braces(`le="+Inf"`), s.Count)
-	fmt.Fprintf(w, "%s_sum%s %g\n", name, braces(""), float64(s.TotalNs)/1e9)
-	fmt.Fprintf(w, "%s_count%s %d\n", name, braces(""), s.Count)
+	fmt.Fprintf(w, "%s_bucket{op=%q,le=\"+Inf\"} %d\n", name, op, s.Count)
+	fmt.Fprintf(w, "%s_sum{op=%q} %g\n", name, op, float64(s.TotalNs)/1e9)
+	fmt.Fprintf(w, "%s_count{op=%q} %d\n", name, op, s.Count)
 }
 
 func syscallOps() []probe.Op {

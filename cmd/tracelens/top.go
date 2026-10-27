@@ -34,8 +34,8 @@ func (r procRow) syscalls() float64 {
 	return t
 }
 
-// interval turns one sampling interval's activity into per-process rates.
-func interval(delta map[probe.Key]probe.Stats, secs float64) []procRow {
+// rates turns one sampling interval's activity into per-process rates.
+func rates(delta map[probe.Key]probe.Stats, secs float64) []procRow {
 	byPID := map[uint32]*procRow{}
 	for k, d := range delta {
 		r := byPID[k.Tgid]
@@ -100,7 +100,7 @@ func fmtDur(d time.Duration) string {
 
 func runTop(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("top", flag.ExitOnError)
-	every := fs.Duration("interval", 2*time.Second, "sampling interval")
+	interval := fs.Duration("interval", 2*time.Second, "sampling interval")
 	limit := fs.Int("n", 15, "processes to show")
 	fs.Parse(args)
 
@@ -115,7 +115,7 @@ func runTop(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	tick := time.NewTicker(*every)
+	tick := time.NewTicker(*interval)
 	defer tick.Stop()
 	last := time.Now()
 	for {
@@ -128,7 +128,7 @@ func runTop(ctx context.Context, args []string) error {
 				return err
 			}
 			fmt.Printf("\n%s\n", now.Format("15:04:05"))
-			printTop(os.Stdout, interval(probe.Delta(prev, cur), now.Sub(last).Seconds()), *limit)
+			printTop(os.Stdout, rates(probe.Delta(prev, cur), now.Sub(last).Seconds()), *limit)
 			prev, last = cur, now
 		}
 	}

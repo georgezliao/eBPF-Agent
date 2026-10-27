@@ -15,9 +15,9 @@ import (
 	"github.com/georgezliao/tracelens/internal/probe"
 )
 
-// minTriggerCalls keeps a process from triggering a capture on a handful of slow calls,
-// where p99 is just the slowest one.
-const minTriggerCalls = 20
+// minTriggerCalls is the fewest calls in an interval for a process to trigger a capture.
+// With nearest rank, p99 of fewer than 100 samples is just the slowest call.
+const minTriggerCalls = 100
 
 // recapture is how long a PID must wait before it can trigger another capture.
 const recapture = time.Minute
@@ -44,7 +44,7 @@ func slowest(delta map[probe.Key]probe.Stats, op probe.Op, threshold time.Durati
 func runAgent(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("agent", flag.ExitOnError)
 	listen := fs.String("listen", ":9090", "address for the Prometheus /metrics endpoint")
-	every := fs.Duration("interval", time.Second, "how often to read the kernel stats")
+	interval := fs.Duration("interval", time.Second, "how often to read the kernel stats")
 	trigger := fs.Duration("trigger", 0, "capture a process whose interval p99 for -trigger-op reaches this (0 = off)")
 	triggerOp := fs.String("trigger-op", "read", "op watched by -trigger")
 	captureFor := fs.Duration("capture", 10*time.Second, "length of a triggered capture")
@@ -61,7 +61,7 @@ func runAgent(ctx context.Context, args []string) error {
 	}
 	defer p.Close()
 
-	m := &metrics{lost: p.Lost}
+	m := &metrics{probe: p}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m)
 	srv := &http.Server{Addr: *listen, Handler: mux}
@@ -82,11 +82,14 @@ func runAgent(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	tick := time.NewTicker(*every)
+	tick := time.NewTicker(*interval)
 	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
+			if capturing {
+				<-captureDone // the capture uses p, which is closed on return
+			}
 			return nil
 		case <-captureDone:
 			capturing = false
@@ -96,8 +99,16 @@ func runAgent(ctx context.Context, args []string) error {
 				return err
 			}
 			delta := probe.Delta(prev, cur)
-			prev = cur
 			m.add(delta)
+			if err := p.ForgetExited(cur); err != nil {
+				return err
+			}
+			prev = cur
+			for pid, t := range lastCapture {
+				if now.Sub(t) >= recapture {
+					delete(lastCapture, pid)
+				}
+			}
 
 			if *trigger == 0 || capturing {
 				continue
@@ -115,12 +126,11 @@ func runAgent(ctx context.Context, args []string) error {
 				pid, comm(pid), op, fmtDur(p99), *trigger, *captureFor, name)
 			go func() {
 				defer func() { captureDone <- struct{}{} }()
-				s, err := capture(ctx, p, pid, *captureFor, 0, name)
+				s, drops, err := captureCountingDrops(ctx, p, pid, *captureFor, 0, name)
 				if err != nil {
 					log.Printf("capture pid %d: %v", pid, err)
 					return
 				}
-				drops, _, _ := p.Lost()
 				s.print(log.Writer(), drops)
 			}()
 		}
