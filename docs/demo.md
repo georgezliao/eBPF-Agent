@@ -9,7 +9,7 @@ scripts/linux.sh scripts/demo.sh
 
 `bin/demo` handles 200 requests per second and prints its own per-second p50/p99. The agent runs alongside with `-trigger 20ms -trigger-op fsync -capture 5s`.
 
-The output below is from one run in the Lima VM described in [benchmarks.md](benchmarks.md) (Ubuntu 24.04, kernel 6.8, 4 vCPUs on an M4 MacBook Air). Timings vary a lot from run to run. Three runs while building the demo all showed the fsync jump, with peaks between about 200 and 360 ms in the demo's own p99.
+The output below is from one run in the Lima VM described in [benchmarks.md](benchmarks.md) (Ubuntu 24.04, kernel 6.8, 4 vCPUs on an M4 MacBook Air). Timings vary a lot from run to run. All four runs while building the demo showed the fsync jump; the worst per-second p99 in the demo's own log ranged from about 200 to 700 ms.
 
 ## Before the bulk write
 
