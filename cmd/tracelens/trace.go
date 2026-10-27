@@ -33,7 +33,7 @@ func newSummary() *summary {
 func (s *summary) add(e probe.Event) {
 	op := probe.Op(e.Op)
 	s.durs[op] = append(s.durs[op], time.Duration(e.DurationNs))
-	if e.Ret < 0 {
+	if probe.Failed(e.Ret) {
 		s.errs[op]++
 	}
 	i := sort.Search(len(s.longest), func(i int) bool { return s.longest[i].DurationNs < e.DurationNs })

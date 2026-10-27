@@ -15,6 +15,7 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
+	"golang.org/x/sys/unix"
 )
 
 // Op is a traced syscall, matching enum op in tracelens.bpf.c.
@@ -165,4 +166,10 @@ func (e *Event) CommString() string {
 		b = append(b, byte(c))
 	}
 	return string(b)
+}
+
+// Failed reports whether a syscall return value is a real failure, using the same rule as
+// the kernel-side error counter: EAGAIN and EINPROGRESS are normal for non-blocking I/O.
+func Failed(ret int64) bool {
+	return ret < 0 && ret != -int64(unix.EAGAIN) && ret != -int64(unix.EINPROGRESS)
 }
