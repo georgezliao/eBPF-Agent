@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0 OR MIT
 //
-// Syscall latency per process. Each syscall entry stores a timestamp keyed by TID; the
-// matching exit computes the duration and folds it into per-CPU stats keyed by
-// (tgid, op). Detailed per-call events only leave the kernel for the one TGID that
+// Syscall latency and run-queue delay per process. Each syscall entry stores a timestamp
+// keyed by TID; the matching exit computes the duration and folds it into per-CPU stats
+// keyed by (tgid, op). Run-queue delay (wakeup to running) goes into the same map as the
+// pseudo-op OP_RUNQ. Detailed per-call events only leave the kernel for the one TGID that
 // userspace selects in `config`.
 
 #include "headers/types.h"
@@ -11,7 +12,7 @@
 #define EAGAIN 11
 #define EINPROGRESS 115
 
-enum op { OP_READ, OP_WRITE, OP_OPENAT, OP_CONNECT, OP_FSYNC, NUM_OPS };
+enum op { OP_READ, OP_WRITE, OP_OPENAT, OP_CONNECT, OP_FSYNC, OP_RUNQ, NUM_OPS };
 
 // Context layouts from /sys/kernel/tracing/events/syscalls/sys_{enter,exit}_*/format.
 // Every syscall tracepoint has the same 8-byte common header and int syscall number.
@@ -20,6 +21,14 @@ struct sys_exit_ctx {
 	__s32 nr;
 	__s64 ret;
 };
+
+// Only the fields we read. preserve_access_index makes clang emit CO-RE relocations, so
+// the loader patches in the running kernel's real offsets from its BTF.
+struct task_struct {
+	int pid;
+	int tgid;
+	char comm[16];
+} __attribute__((preserve_access_index));
 
 struct trace_config {
 	__u32 target_tgid;      // 0 = no detailed events
@@ -66,6 +75,14 @@ struct {
 	__type(key, __u32);
 	__type(value, __u64);
 } active SEC(".maps");
+
+// Runnable-since timestamps by TID, for run-queue delay.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, __u32);
+	__type(value, __u64);
+} runnable SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
@@ -132,7 +149,10 @@ static __always_inline void record(__u32 tgid, __u32 op, __u64 dur, __s64 ret)
 	}
 }
 
-static __always_inline void emit(__u32 tgid, __u32 tid, __u32 op, __u64 now, __u64 dur, __s64 ret)
+// task names the process the event is about when it isn't the current one (sched_switch
+// runs on behalf of the task being switched out); NULL means current.
+static __always_inline void emit(__u32 tgid, __u32 tid, __u32 op, __u64 now, __u64 dur, __s64 ret,
+				 struct task_struct *task)
 {
 	__u32 zero = 0;
 	struct trace_config *cfg = bpf_map_lookup_elem(&config, &zero);
@@ -152,7 +172,10 @@ static __always_inline void emit(__u32 tgid, __u32 tid, __u32 op, __u64 now, __u
 	e->tgid = tgid;
 	e->tid = tid;
 	e->op = op;
-	bpf_get_current_comm(e->comm, sizeof(e->comm));
+	if (task)
+		bpf_probe_read_kernel_str(e->comm, sizeof(e->comm), task->comm);
+	else
+		bpf_get_current_comm(e->comm, sizeof(e->comm));
 	bpf_ringbuf_submit(e, 0);
 }
 
@@ -169,7 +192,7 @@ static __always_inline int on_exit(__u32 op, __s64 ret)
 	bpf_map_delete_elem(&active, &tid);
 
 	record(tgid, op, dur, ret);
-	emit(tgid, tid, op, now, dur, ret);
+	emit(tgid, tid, op, now, dur, ret, 0);
 	return 0;
 }
 
@@ -186,6 +209,56 @@ SYSCALL_PROBES(connect, OP_CONNECT)
 SYSCALL_PROBES(fsync, OP_FSYNC)
 SYSCALL_PROBES(fdatasync, OP_FSYNC)
 
+static __always_inline void mark_runnable(__u32 tid)
+{
+	if (tid == 0) // idle task
+		return;
+	__u64 ts = bpf_ktime_get_ns();
+	bpf_map_update_elem(&runnable, &tid, &ts, BPF_ANY);
+}
+
+// tp_btf programs get the raw tracepoint arguments as an array of u64.
+SEC("tp_btf/sched_wakeup")
+int sched_wakeup(__u64 *ctx)
+{
+	struct task_struct *p = (void *)ctx[0];
+	mark_runnable(p->pid);
+	return 0;
+}
+
+SEC("tp_btf/sched_wakeup_new")
+int sched_wakeup_new(__u64 *ctx)
+{
+	struct task_struct *p = (void *)ctx[0];
+	mark_runnable(p->pid);
+	return 0;
+}
+
+// sched_switch(bool preempt, prev, next, unsigned int prev_state)
+SEC("tp_btf/sched_switch")
+int sched_switch(__u64 *ctx)
+{
+	struct task_struct *prev = (void *)ctx[1], *next = (void *)ctx[2];
+	__u32 prev_state = (__u32)ctx[3];
+
+	// A preempted task (state TASK_RUNNING, 0) goes straight back on the run queue.
+	if (prev_state == 0)
+		mark_runnable(prev->pid);
+
+	__u32 tid = next->pid;
+	__u64 *since = bpf_map_lookup_elem(&runnable, &tid);
+	if (!since)
+		return 0;
+	__u64 now = bpf_ktime_get_ns();
+	__u64 dur = now - *since;
+	bpf_map_delete_elem(&runnable, &tid);
+
+	__u32 tgid = next->tgid;
+	record(tgid, OP_RUNQ, dur, 0);
+	emit(tgid, tid, OP_RUNQ, now, dur, 0, next);
+	return 0;
+}
+
 // Drop a process's stats when its main thread exits, so the stats map only holds live
 // processes. If the leader exits before other threads, their later syscalls recreate
 // the entry and it stays until the agent stops; rare enough to accept.
@@ -196,6 +269,7 @@ int process_exit(void *ctx)
 	__u32 tid = (__u32)id, tgid = id >> 32;
 
 	bpf_map_delete_elem(&active, &tid);
+	bpf_map_delete_elem(&runnable, &tid);
 	if (tid != tgid)
 		return 0;
 	for (__u32 op = 0; op < NUM_OPS; op++) {

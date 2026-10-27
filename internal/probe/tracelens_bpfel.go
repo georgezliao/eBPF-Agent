@@ -55,6 +55,7 @@ const (
 	tracelensMapConfig          = "config"
 	tracelensMapDrops           = "drops"
 	tracelensMapEvents          = "events"
+	tracelensMapRunnable        = "runnable"
 	tracelensMapStats           = "stats"
 	tracelensProgEnterConnect   = "enter_connect"
 	tracelensProgEnterFdatasync = "enter_fdatasync"
@@ -69,6 +70,9 @@ const (
 	tracelensProgExitRead       = "exit_read"
 	tracelensProgExitWrite      = "exit_write"
 	tracelensProgProcessExit    = "process_exit"
+	tracelensProgSchedSwitch    = "sched_switch"
+	tracelensProgSchedWakeup    = "sched_wakeup"
+	tracelensProgSchedWakeupNew = "sched_wakeup_new"
 	tracelensVarUnusedEvent     = "unused_event"
 )
 
@@ -127,17 +131,21 @@ type tracelensProgramSpecs struct {
 	ExitRead       *ebpf.ProgramSpec `ebpf:"exit_read"`
 	ExitWrite      *ebpf.ProgramSpec `ebpf:"exit_write"`
 	ProcessExit    *ebpf.ProgramSpec `ebpf:"process_exit"`
+	SchedSwitch    *ebpf.ProgramSpec `ebpf:"sched_switch"`
+	SchedWakeup    *ebpf.ProgramSpec `ebpf:"sched_wakeup"`
+	SchedWakeupNew *ebpf.ProgramSpec `ebpf:"sched_wakeup_new"`
 }
 
 // tracelensMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type tracelensMapSpecs struct {
-	Active *ebpf.MapSpec `ebpf:"active"`
-	Config *ebpf.MapSpec `ebpf:"config"`
-	Drops  *ebpf.MapSpec `ebpf:"drops"`
-	Events *ebpf.MapSpec `ebpf:"events"`
-	Stats  *ebpf.MapSpec `ebpf:"stats"`
+	Active   *ebpf.MapSpec `ebpf:"active"`
+	Config   *ebpf.MapSpec `ebpf:"config"`
+	Drops    *ebpf.MapSpec `ebpf:"drops"`
+	Events   *ebpf.MapSpec `ebpf:"events"`
+	Runnable *ebpf.MapSpec `ebpf:"runnable"`
+	Stats    *ebpf.MapSpec `ebpf:"stats"`
 }
 
 // tracelensVariableSpecs contains global variables before they are loaded into the kernel.
@@ -167,11 +175,12 @@ func (o *tracelensObjects) Close() error {
 //
 // It can be passed to loadTracelensObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tracelensMaps struct {
-	Active *ebpf.Map `ebpf:"active"`
-	Config *ebpf.Map `ebpf:"config"`
-	Drops  *ebpf.Map `ebpf:"drops"`
-	Events *ebpf.Map `ebpf:"events"`
-	Stats  *ebpf.Map `ebpf:"stats"`
+	Active   *ebpf.Map `ebpf:"active"`
+	Config   *ebpf.Map `ebpf:"config"`
+	Drops    *ebpf.Map `ebpf:"drops"`
+	Events   *ebpf.Map `ebpf:"events"`
+	Runnable *ebpf.Map `ebpf:"runnable"`
+	Stats    *ebpf.Map `ebpf:"stats"`
 }
 
 func (m *tracelensMaps) Close() error {
@@ -180,6 +189,7 @@ func (m *tracelensMaps) Close() error {
 		m.Config,
 		m.Drops,
 		m.Events,
+		m.Runnable,
 		m.Stats,
 	)
 }
@@ -208,6 +218,9 @@ type tracelensPrograms struct {
 	ExitRead       *ebpf.Program `ebpf:"exit_read"`
 	ExitWrite      *ebpf.Program `ebpf:"exit_write"`
 	ProcessExit    *ebpf.Program `ebpf:"process_exit"`
+	SchedSwitch    *ebpf.Program `ebpf:"sched_switch"`
+	SchedWakeup    *ebpf.Program `ebpf:"sched_wakeup"`
+	SchedWakeupNew *ebpf.Program `ebpf:"sched_wakeup_new"`
 }
 
 func (p *tracelensPrograms) Close() error {
@@ -225,6 +238,9 @@ func (p *tracelensPrograms) Close() error {
 		p.ExitRead,
 		p.ExitWrite,
 		p.ProcessExit,
+		p.SchedSwitch,
+		p.SchedWakeup,
+		p.SchedWakeupNew,
 	)
 }
 

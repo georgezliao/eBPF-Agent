@@ -27,10 +27,11 @@ const (
 	OpOpenat
 	OpConnect
 	OpFsync // fsync and fdatasync
+	OpRunq  // run-queue delay, not a syscall: wakeup or preemption until back on a CPU
 	NumOps
 )
 
-var opNames = []string{"read", "write", "openat", "connect", "fsync"}
+var opNames = []string{"read", "write", "openat", "connect", "fsync", "runq"}
 
 func (o Op) String() string {
 	if int(o) < len(opNames) {
@@ -40,7 +41,7 @@ func (o Op) String() string {
 }
 
 // Ops lists every traced syscall in display order.
-var Ops = []Op{OpRead, OpWrite, OpOpenat, OpConnect, OpFsync}
+var Ops = []Op{OpRead, OpWrite, OpOpenat, OpConnect, OpFsync, OpRunq}
 
 type (
 	Key   = tracelensStatsKey
@@ -55,7 +56,7 @@ type Probe struct {
 }
 
 // Open loads the BPF objects and attaches every program to the tracepoint named by its
-// ELF section. ringBytes sizes the event ring buffer (a power of two multiple of the page
+// ELF section ("tracepoint/<group>/<event>" or "tp_btf/<event>"). ringBytes sizes the event ring buffer (a power of two multiple of the page
 // size); 0 keeps the default.
 func Open(ringBytes uint32) (*Probe, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -75,12 +76,7 @@ func Open(ringBytes uint32) (*Probe, error) {
 	p := &Probe{coll: coll}
 
 	for name, ps := range spec.Programs {
-		group, event, ok := strings.Cut(strings.TrimPrefix(ps.SectionName, "tracepoint/"), "/")
-		if !ok {
-			p.Close()
-			return nil, fmt.Errorf("program %s: unexpected section %q", name, ps.SectionName)
-		}
-		l, err := link.Tracepoint(group, event, coll.Programs[name], nil)
+		l, err := attach(ps.SectionName, coll.Programs[name])
 		if err != nil {
 			p.Close()
 			return nil, fmt.Errorf("attach %s: %w", ps.SectionName, err)
@@ -88,6 +84,17 @@ func Open(ringBytes uint32) (*Probe, error) {
 		p.links = append(p.links, l)
 	}
 	return p, nil
+}
+
+func attach(section string, prog *ebpf.Program) (link.Link, error) {
+	if strings.HasPrefix(section, "tp_btf/") {
+		return link.AttachTracing(link.TracingOptions{Program: prog})
+	}
+	group, event, ok := strings.Cut(strings.TrimPrefix(section, "tracepoint/"), "/")
+	if !ok {
+		return nil, fmt.Errorf("unexpected section %q", section)
+	}
+	return link.Tracepoint(group, event, prog, nil)
 }
 
 // Close detaches all programs and frees the maps.
