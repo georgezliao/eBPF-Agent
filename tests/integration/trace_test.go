@@ -98,14 +98,17 @@ func TestMinDurationFiltersInKernel(t *testing.T) {
 	badReads(100) // sub-microsecond
 	slowReads(t, 5, 5*time.Millisecond)
 
-	ev := drain(t, p)
-	if len(ev) < 5 {
-		t.Fatalf("got %d events, want the 5 slow reads", len(ev))
-	}
-	for _, e := range ev {
+	var slow int
+	for _, e := range drain(t, p) {
 		if e.DurationNs < uint64(2*time.Millisecond) {
-			t.Errorf("event of %v passed a 2ms filter", time.Duration(e.DurationNs))
+			t.Errorf("%s event of %v passed a 2ms filter", probe.Op(e.Op), time.Duration(e.DurationNs))
 		}
+		if probe.Op(e.Op) == probe.OpRead && e.DurationNs >= uint64(4*time.Millisecond) {
+			slow++
+		}
+	}
+	if slow != 5 {
+		t.Errorf("got %d slow read events, want 5", slow)
 	}
 }
 
@@ -124,7 +127,7 @@ func TestFullRingBufferCountsDrops(t *testing.T) {
 
 	const n = 1000
 	badReads(n) // nobody is consuming
-	drops, err := p.Drops()
+	drops, _, err := p.Lost()
 	if err != nil {
 		t.Fatal(err)
 	}

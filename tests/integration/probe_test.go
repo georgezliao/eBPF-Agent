@@ -147,7 +147,9 @@ func TestFsyncAndFdatasyncShareAnOp(t *testing.T) {
 
 	before := readStats(t, p, probe.OpFsync)
 	for range 3 {
-		f.Write([]byte("x"))
+		if _, err := f.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
 		if err := f.Sync(); err != nil { // fsync
 			t.Fatal(err)
 		}
@@ -188,9 +190,10 @@ func TestRunqDelayUnderCPUContention(t *testing.T) {
 		c.Process.Kill()
 		c.Wait()
 	}
-	// Expect ~n*spin/2 in total; a quarter of that leaves room for a noisy VM.
-	if want := time.Duration(n) * spin / 4; waited < want {
-		t.Errorf("spinners waited %v in the run queue, want >= %v", waited, want)
+	// Expect ~n*spin/2 in total; a quarter of that leaves room for a noisy VM. Waiting
+	// longer than n*spin is impossible and would mean stale wakeup timestamps.
+	if lo, hi := time.Duration(n)*spin/4, time.Duration(n)*spin; waited < lo || waited > hi {
+		t.Errorf("spinners waited %v in the run queue, want between %v and %v", waited, lo, hi)
 	}
 	t.Logf("%d spinners on %d CPUs for %v: %v total run-queue wait", n, runtime.NumCPU(), spin, waited)
 }
