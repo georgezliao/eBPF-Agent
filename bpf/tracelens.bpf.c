@@ -5,7 +5,7 @@
 // (tgid, op). Detailed per-call events only leave the kernel for the one TGID that
 // userspace selects in `config`.
 
-#include "headers/common.h"
+#include "headers/types.h"
 
 #define HIST_SLOTS 40 // log2(ns) buckets; slot 39 starts at ~9 minutes
 #define EAGAIN 11
