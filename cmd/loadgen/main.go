@@ -16,7 +16,7 @@ import (
 )
 
 // Every sampleEvery-th call is timed; timing every call would add two clock reads to a
-// ~150ns syscall.
+// ~200ns syscall.
 const sampleEvery = 16
 
 type result struct {
@@ -90,7 +90,8 @@ func worker(deadline time.Time, rate int) (uint64, []time.Duration) {
 	}
 
 	const slot = time.Millisecond
-	perSlot := rate / int(time.Second/slot)
+	perSlot := float64(rate) / float64(time.Second/slot)
+	var due float64 // calls owed, carrying the fraction between slots
 	next := time.Now()
 	for time.Now().Before(deadline) {
 		if rate == 0 {
@@ -99,7 +100,8 @@ func worker(deadline time.Time, rate int) (uint64, []time.Duration) {
 			}
 			continue
 		}
-		for range perSlot {
+		due += perSlot
+		for ; due >= 1; due-- {
 			call()
 		}
 		next = next.Add(slot)
