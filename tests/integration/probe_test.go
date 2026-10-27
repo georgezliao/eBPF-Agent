@@ -197,3 +197,33 @@ func TestRunqDelayUnderCPUContention(t *testing.T) {
 	}
 	t.Logf("%d spinners on %d CPUs for %v: %v total run-queue wait", n, runtime.NumCPU(), spin, waited)
 }
+
+func TestExitedProcessCountedThenForgotten(t *testing.T) {
+	p := openProbe(t)
+	c := exec.Command("head", "-c", "100", "/dev/zero")
+	if err := c.Run(); err != nil {
+		t.Fatal(err)
+	}
+	key := probe.Key{Tgid: uint32(c.Process.Pid), Op: uint32(probe.OpRead)}
+
+	cur, err := p.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur[key].Count == 0 {
+		t.Fatal("exited process's reads are gone before userspace read them")
+	}
+	if err := p.ForgetExited(cur); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cur[key]; ok {
+		t.Error("ForgetExited left the key in the snapshot")
+	}
+	again, err := p.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := again[key]; ok {
+		t.Error("ForgetExited left the key in the kernel map")
+	}
+}

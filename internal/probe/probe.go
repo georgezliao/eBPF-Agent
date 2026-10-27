@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -155,6 +156,12 @@ func (p *Probe) Events() (*ringbuf.Reader, error) {
 	return ringbuf.NewReader(p.coll.Maps["events"])
 }
 
+// Indexes into the lost map, matching LOST_* in tracelens.bpf.c.
+const (
+	lostEvents uint32 = iota
+	lostStats
+)
+
 // Lost reports what the kernel couldn't record: trace events dropped because the ring
 // buffer was full, and stats updates dropped because the stats map was full.
 func (p *Probe) Lost() (events, stats uint64, err error) {
@@ -169,11 +176,27 @@ func (p *Probe) Lost() (events, stats uint64, err error) {
 		}
 		return n, nil
 	}
-	if events, err = sum(0); err != nil {
+	if events, err = sum(lostEvents); err != nil {
 		return 0, 0, err
 	}
-	stats, err = sum(1)
+	stats, err = sum(lostStats)
 	return events, stats, err
+}
+
+// ForgetExited deletes the stats of processes that no longer exist, from the kernel map
+// and from cur. Call it after the snapshot's values have been used: the kernel keeps an
+// exited process's counters until then, so its last interval isn't lost.
+func (p *Probe) ForgetExited(cur map[Key]Stats) error {
+	for k := range cur {
+		if _, err := os.Stat(fmt.Sprintf("/proc/%d", k.Tgid)); !errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err := p.coll.Maps["stats"].Delete(k); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return err
+		}
+		delete(cur, k)
+	}
+	return nil
 }
 
 // Decode parses one ring buffer record.

@@ -68,7 +68,8 @@ struct {
 	__type(value, struct trace_config);
 } config SEC(".maps");
 
-// In-flight syscalls by TID. LRU so threads that die mid-syscall can't fill it.
+// In-flight syscalls by TID. LRU so entries left by threads that died mid-syscall get
+// evicted; a reused TID overwrites its stale entry at its first syscall entry.
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__uint(max_entries, 16384);
@@ -84,9 +85,11 @@ struct {
 	__type(value, __u64);
 } runnable SEC(".maps");
 
-// Up to NUM_OPS keys per live process (kernel threads included, via runq). The value is
-// 352 bytes per CPU, so 8192 entries is ~2.9 MB per CPU. When it's full, new processes
-// aren't tracked and lost[LOST_STATS] counts the misses.
+// Up to NUM_OPS keys per process (kernel threads included, via runq). Userspace deletes a
+// process's keys after it has read their final values and seen the process is gone; the
+// kernel never deletes them, so short-lived processes still get counted. The value is 352
+// bytes per CPU, so 8192 entries is ~2.9 MB per CPU. When it's full, new processes aren't
+// tracked and lost[LOST_STATS] counts the misses.
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
 	__uint(max_entries, 8192);
@@ -257,6 +260,8 @@ int sched_switch(__u64 *ctx)
 	// prev stays on the run queue if it was preempted or is still TASK_RUNNING (0).
 	// Checking prev_state alone misses a task preempted between setting
 	// TASK_INTERRUPTIBLE and calling schedule(): non-zero state, still queued.
+	// Known undercount: a sched_wakeup for a task that's already queued (ttwu_runnable)
+	// moves its timestamp forward.
 	bool preempt = ctx[0];
 	if (preempt || prev_state == 0)
 		mark_runnable(prev->pid);
@@ -272,26 +277,6 @@ int sched_switch(__u64 *ctx)
 	__u32 tgid = next->tgid;
 	record(tgid, OP_RUNQ, dur, 0);
 	emit(tgid, tid, OP_RUNQ, now, dur, 0, next);
-	return 0;
-}
-
-// Drop a process's stats when its main thread exits, so the stats map only holds live
-// processes. If the leader exits before other threads, their later syscalls recreate
-// the entry and it stays until the agent stops; rare enough to accept.
-SEC("tracepoint/sched/sched_process_exit")
-int process_exit(void *ctx)
-{
-	__u64 id = bpf_get_current_pid_tgid();
-	__u32 tid = (__u32)id, tgid = id >> 32;
-
-	bpf_map_delete_elem(&active, &tid);
-	bpf_map_delete_elem(&runnable, &tid);
-	if (tid != tgid)
-		return 0;
-	for (__u32 op = 0; op < NUM_OPS; op++) {
-		struct stats_key key = { .tgid = tgid, .op = op };
-		bpf_map_delete_elem(&stats, &key);
-	}
 	return 0;
 }
 

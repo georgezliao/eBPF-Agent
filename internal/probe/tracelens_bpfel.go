@@ -69,7 +69,6 @@ const (
 	tracelensProgExitOpenat     = "exit_openat"
 	tracelensProgExitRead       = "exit_read"
 	tracelensProgExitWrite      = "exit_write"
-	tracelensProgProcessExit    = "process_exit"
 	tracelensProgSchedSwitch    = "sched_switch"
 	tracelensProgSchedWakeup    = "sched_wakeup"
 	tracelensProgSchedWakeupNew = "sched_wakeup_new"
@@ -130,7 +129,6 @@ type tracelensProgramSpecs struct {
 	ExitOpenat     *ebpf.ProgramSpec `ebpf:"exit_openat"`
 	ExitRead       *ebpf.ProgramSpec `ebpf:"exit_read"`
 	ExitWrite      *ebpf.ProgramSpec `ebpf:"exit_write"`
-	ProcessExit    *ebpf.ProgramSpec `ebpf:"process_exit"`
 	SchedSwitch    *ebpf.ProgramSpec `ebpf:"sched_switch"`
 	SchedWakeup    *ebpf.ProgramSpec `ebpf:"sched_wakeup"`
 	SchedWakeupNew *ebpf.ProgramSpec `ebpf:"sched_wakeup_new"`
@@ -217,7 +215,6 @@ type tracelensPrograms struct {
 	ExitOpenat     *ebpf.Program `ebpf:"exit_openat"`
 	ExitRead       *ebpf.Program `ebpf:"exit_read"`
 	ExitWrite      *ebpf.Program `ebpf:"exit_write"`
-	ProcessExit    *ebpf.Program `ebpf:"process_exit"`
 	SchedSwitch    *ebpf.Program `ebpf:"sched_switch"`
 	SchedWakeup    *ebpf.Program `ebpf:"sched_wakeup"`
 	SchedWakeupNew *ebpf.Program `ebpf:"sched_wakeup_new"`
@@ -237,7 +234,6 @@ func (p *tracelensPrograms) Close() error {
 		p.ExitOpenat,
 		p.ExitRead,
 		p.ExitWrite,
-		p.ProcessExit,
 		p.SchedSwitch,
 		p.SchedWakeup,
 		p.SchedWakeupNew,
