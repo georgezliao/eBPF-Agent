@@ -19,7 +19,7 @@ func TestMetricsAccumulateAcrossProcesses(t *testing.T) {
 	})
 
 	var b strings.Builder
-	writeMetrics(&b, &m.totals, 7)
+	writeMetrics(&b, &m.totals, 7, 3)
 	out := b.String()
 	for _, want := range []string{
 		`tracelens_syscalls_total{op="read"} 6`,
@@ -31,6 +31,7 @@ func TestMetricsAccumulateAcrossProcesses(t *testing.T) {
 		`tracelens_syscall_duration_seconds_sum{op="read"} 2`,
 		`tracelens_runq_delay_seconds_count 0`,
 		`tracelens_events_dropped_total 7`,
+		`tracelens_stats_dropped_total 3`,
 	} {
 		if !strings.Contains(out, want+"\n") {
 			t.Errorf("missing line %q", want)

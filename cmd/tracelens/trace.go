@@ -23,7 +23,7 @@ const keepLongest = 10
 type summary struct {
 	durs    map[probe.Op][]time.Duration
 	errs    map[probe.Op]int
-	longest []probe.Event // sorted, longest first
+	longest []probe.Event // syscalls only, sorted, longest first
 }
 
 func newSummary() *summary {
@@ -35,6 +35,9 @@ func (s *summary) add(e probe.Event) {
 	s.durs[op] = append(s.durs[op], time.Duration(e.DurationNs))
 	if probe.Failed(e.Ret) {
 		s.errs[op]++
+	}
+	if op == probe.OpRunq {
+		return // longest calls lists syscalls only; runq waits would crowd them out
 	}
 	i := sort.Search(len(s.longest), func(i int) bool { return s.longest[i].DurationNs < e.DurationNs })
 	if i < keepLongest {
@@ -69,7 +72,7 @@ func (s *summary) print(w io.Writer, drops uint64) {
 	if len(s.longest) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "\nlongest calls:")
+	fmt.Fprintln(w, "\nlongest syscalls:")
 	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, e := range s.longest {
 		fmt.Fprintf(tw, "  %s\ttid %d\t%s\tret %d\n", fmtDur(time.Duration(e.DurationNs)),
@@ -80,7 +83,7 @@ func (s *summary) print(w io.Writer, drops uint64) {
 
 // jsonEvent is the --out line format.
 type jsonEvent struct {
-	TimeNs     uint64 `json:"ts_ns"` // CLOCK_MONOTONIC at syscall exit
+	TimeNs     uint64 `json:"ts_ns"` // CLOCK_MONOTONIC when the syscall returned or runq wait ended
 	DurationNs uint64 `json:"duration_ns"`
 	Op         string `json:"op"`
 	Ret        int64  `json:"ret"`
@@ -149,7 +152,7 @@ func runTrace(ctx context.Context, args []string) error {
 		}
 	}
 
-	drops, err := p.Drops()
+	drops, _, err := p.Lost()
 	if err != nil {
 		return err
 	}

@@ -35,3 +35,15 @@ func TestSummaryKeepsLongest(t *testing.T) {
 		t.Errorf("errs=%d durs=%d", s.errs[probe.OpRead], len(s.durs[probe.OpRead]))
 	}
 }
+
+func TestSummaryLongestSkipsRunq(t *testing.T) {
+	s := newSummary()
+	s.add(probe.Event{DurationNs: 100, Op: uint32(probe.OpRunq)})
+	s.add(probe.Event{DurationNs: 5, Op: uint32(probe.OpRead)})
+	if len(s.longest) != 1 || probe.Op(s.longest[0].Op) != probe.OpRead {
+		t.Errorf("longest = %+v, want only the read", s.longest)
+	}
+	if len(s.durs[probe.OpRunq]) != 1 {
+		t.Error("runq should still count in the per-op table")
+	}
+}

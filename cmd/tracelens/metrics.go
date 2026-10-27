@@ -19,7 +19,7 @@ import (
 type metrics struct {
 	mu     sync.Mutex
 	totals [probe.NumOps]probe.Stats
-	drops  func() (uint64, error)
+	lost   func() (events, stats uint64, err error)
 }
 
 func (m *metrics) add(delta map[probe.Key]probe.Stats) {
@@ -38,7 +38,7 @@ func (m *metrics) add(delta map[probe.Key]probe.Stats) {
 }
 
 func (m *metrics) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
-	drops, err := m.drops()
+	events, stats, err := m.lost()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -47,12 +47,12 @@ func (m *metrics) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	totals := m.totals
 	m.mu.Unlock()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	writeMetrics(w, &totals, drops)
+	writeMetrics(w, &totals, events, stats)
 }
 
 // writeMetrics renders the Prometheus text format. Syscall ops and run-queue delay go in
 // separate families since runq isn't a syscall.
-func writeMetrics(w io.Writer, totals *[probe.NumOps]probe.Stats, drops uint64) {
+func writeMetrics(w io.Writer, totals *[probe.NumOps]probe.Stats, lostEvents, lostStats uint64) {
 	fmt.Fprintln(w, "# HELP tracelens_syscalls_total Completed syscalls.")
 	fmt.Fprintln(w, "# TYPE tracelens_syscalls_total counter")
 	for _, op := range syscallOps() {
@@ -78,7 +78,10 @@ func writeMetrics(w io.Writer, totals *[probe.NumOps]probe.Stats, drops uint64) 
 	writeHist(w, "tracelens_runq_delay_seconds", "", &totals[probe.OpRunq])
 	fmt.Fprintln(w, "# HELP tracelens_events_dropped_total Trace events lost because the ring buffer was full.")
 	fmt.Fprintln(w, "# TYPE tracelens_events_dropped_total counter")
-	fmt.Fprintf(w, "tracelens_events_dropped_total %d\n", drops)
+	fmt.Fprintf(w, "tracelens_events_dropped_total %d\n", lostEvents)
+	fmt.Fprintln(w, "# HELP tracelens_stats_dropped_total Stats updates lost because the per-process stats map was full.")
+	fmt.Fprintln(w, "# TYPE tracelens_stats_dropped_total counter")
+	fmt.Fprintf(w, "tracelens_stats_dropped_total %d\n", lostStats)
 }
 
 func writeHist(w io.Writer, name, labels string, s *probe.Stats) {
