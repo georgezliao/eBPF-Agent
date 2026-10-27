@@ -90,18 +90,23 @@ func runAgent(ctx context.Context, args []string) error {
 	}
 	defer p.Close()
 
+	// Cancelled on any return, so the consumer and a running capture stop before p closes.
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+
 	m := &metrics{probe: p}
 	if *exportAll {
 		if err := p.ExportAll(); err != nil {
 			return err
 		}
-		done := make(chan error, 1)
-		go func() { done <- consumeAll(ctx, p, m) }()
-		defer func() {
-			if err := <-done; err != nil {
-				log.Printf("consumer: %v", err)
+		done := make(chan struct{})
+		go func() {
+			if err := consumeAll(ctx, p, m); err != nil {
+				cancel(fmt.Errorf("consumer: %w", err))
 			}
+			close(done)
 		}()
+		defer func() { cancel(nil); <-done }()
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m)
@@ -130,6 +135,9 @@ func runAgent(ctx context.Context, args []string) error {
 		case <-ctx.Done():
 			if capturing {
 				<-captureDone // the capture uses p, which is closed on return
+			}
+			if err := context.Cause(ctx); !errors.Is(err, context.Canceled) {
+				return err // the consumer failed
 			}
 			return nil
 		case <-captureDone:
@@ -167,7 +175,7 @@ func runAgent(ctx context.Context, args []string) error {
 				pid, comm(pid), op, fmtDur(p99), *trigger, *captureFor, name)
 			go func() {
 				defer func() { captureDone <- struct{}{} }()
-				s, drops, err := captureCountingDrops(ctx, p, pid, *captureFor, 0, name)
+				s, drops, err := capture(ctx, p, pid, *captureFor, 0, name)
 				if err != nil {
 					log.Printf("capture pid %d: %v", pid, err)
 					return
