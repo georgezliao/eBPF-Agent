@@ -23,10 +23,13 @@ type procRow struct {
 	errSec float64
 }
 
-func (r procRow) total() float64 {
+// syscalls is the row's syscall rate, used for sorting. Runq isn't a syscall.
+func (r procRow) syscalls() float64 {
 	var t float64
-	for _, v := range r.perSec {
-		t += v
+	for op, v := range r.perSec {
+		if probe.Op(op) != probe.OpRunq {
+			t += v
+		}
 	}
 	return t
 }
@@ -58,7 +61,7 @@ func interval(prev, cur map[probe.Key]probe.Stats, secs float64) []procRow {
 		rows = append(rows, *r)
 	}
 	sort.Slice(rows, func(i, j int) bool {
-		if a, b := rows[i].total(), rows[j].total(); a != b {
+		if a, b := rows[i].syscalls(), rows[j].syscalls(); a != b {
 			return a > b
 		}
 		return rows[i].tgid < rows[j].tgid // stable order between refreshes
@@ -76,15 +79,16 @@ func comm(pid uint32) string {
 
 func printTop(w io.Writer, rows []procRow, limit int) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, "PID\tCOMM\tREAD/s\tWRITE/s\tOPEN/s\tCONN/s\tFSYNC/s\tERR/s\tREAD p99\tWRITE p99\tFSYNC p99\t")
+	fmt.Fprintln(tw, "PID\tCOMM\tREAD/s\tWRITE/s\tOPEN/s\tCONN/s\tFSYNC/s\tERR/s\tREAD p99\tWRITE p99\tFSYNC p99\tRUNQ p99\t")
 	for i, r := range rows {
 		if i == limit {
 			break
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\t%.1f\t%s\t%s\t%s\t\n",
+		fmt.Fprintf(tw, "%d\t%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\t%.1f\t%s\t%s\t%s\t%s\t\n",
 			r.tgid, comm(r.tgid), r.perSec[probe.OpRead], r.perSec[probe.OpWrite],
 			r.perSec[probe.OpOpenat], r.perSec[probe.OpConnect], r.perSec[probe.OpFsync], r.errSec,
-			fmtDur(r.p99[probe.OpRead]), fmtDur(r.p99[probe.OpWrite]), fmtDur(r.p99[probe.OpFsync]))
+			fmtDur(r.p99[probe.OpRead]), fmtDur(r.p99[probe.OpWrite]), fmtDur(r.p99[probe.OpFsync]),
+			fmtDur(r.p99[probe.OpRunq]))
 	}
 	tw.Flush()
 }
