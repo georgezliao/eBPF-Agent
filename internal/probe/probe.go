@@ -4,12 +4,16 @@ package probe
 //go:generate go tool bpf2go -target bpfel -type event -type stats_key -type op_stats -type trace_config tracelens ../../bpf/tracelens.bpf.c -- -I../../bpf
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 )
 
@@ -116,4 +120,49 @@ func (p *Probe) Stats() (map[Key]Stats, error) {
 		out[key] = sum
 	}
 	return out, it.Err()
+}
+
+// SetTarget selects the process whose syscalls are sent as individual events, without
+// reattaching anything. Calls shorter than minDur are filtered out in the kernel.
+// tgid 0 turns detailed events off.
+func (p *Probe) SetTarget(tgid uint32, minDur time.Duration) error {
+	cfg := tracelensTraceConfig{TargetTgid: tgid, MinDurationNs: uint64(minDur)}
+	return p.coll.Maps["config"].Put(uint32(0), cfg)
+}
+
+// Events opens a reader on the event ring buffer. Close it to unblock a pending Read.
+func (p *Probe) Events() (*ringbuf.Reader, error) {
+	return ringbuf.NewReader(p.coll.Maps["events"])
+}
+
+// Drops returns how many events the kernel discarded because the ring buffer was full.
+func (p *Probe) Drops() (uint64, error) {
+	var perCPU []uint64
+	if err := p.coll.Maps["drops"].Lookup(uint32(0), &perCPU); err != nil {
+		return 0, err
+	}
+	var n uint64
+	for _, v := range perCPU {
+		n += v
+	}
+	return n, nil
+}
+
+// Decode parses one ring buffer record.
+func Decode(raw []byte) (Event, error) {
+	var e Event
+	err := binary.Read(bytes.NewReader(raw), binary.LittleEndian, &e)
+	return e, err
+}
+
+// CommString returns the event's task name as a string.
+func (e *Event) CommString() string {
+	b := make([]byte, 0, len(e.Comm))
+	for _, c := range e.Comm {
+		if c == 0 {
+			break
+		}
+		b = append(b, byte(c))
+	}
+	return string(b)
 }
