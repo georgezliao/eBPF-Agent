@@ -18,7 +18,7 @@ import (
 // procRow is one process's activity over a sampling interval.
 type procRow struct {
 	tgid     uint32
-	perSec   [4]float64 // indexed by probe.Op
+	perSec   [probe.NumOps]float64
 	errSec   float64
 	readP99  time.Duration
 	writeP99 time.Duration
@@ -38,7 +38,7 @@ func interval(prev, cur map[probe.Key]probe.Stats, secs float64) []procRow {
 	byPID := map[uint32]*procRow{}
 	for k, c := range cur {
 		p := prev[k]
-		if c.Count < p.Count { // process exited and its PID was reused
+		if c.Count < p.Count || c.Errors < p.Errors { // process exited and its PID was reused
 			p = probe.Stats{}
 		}
 		n := c.Count - p.Count
@@ -64,7 +64,12 @@ func interval(prev, cur map[probe.Key]probe.Stats, secs float64) []procRow {
 	for _, r := range byPID {
 		rows = append(rows, *r)
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].total() > rows[j].total() })
+	sort.Slice(rows, func(i, j int) bool {
+		if a, b := rows[i].total(), rows[j].total(); a != b {
+			return a > b
+		}
+		return rows[i].tgid < rows[j].tgid // stable order between refreshes
+	})
 	return rows
 }
 
@@ -115,6 +120,7 @@ func runTop(ctx context.Context, args []string) error {
 	}
 	defer p.Close()
 
+	fmt.Println("p99 columns are log2 bucket upper bounds (up to 2x the true value).")
 	prev, err := p.Stats()
 	if err != nil {
 		return err
@@ -131,7 +137,7 @@ func runTop(ctx context.Context, args []string) error {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("\n%s  (p99 is a log2 bucket upper bound)\n", now.Format("15:04:05"))
+			fmt.Printf("\n%s\n", now.Format("15:04:05"))
 			printTop(os.Stdout, interval(prev, cur, now.Sub(last).Seconds()), *limit)
 			prev, last = cur, now
 		}

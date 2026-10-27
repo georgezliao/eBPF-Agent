@@ -26,6 +26,7 @@ const (
 	OpWrite
 	OpOpenat
 	OpConnect
+	NumOps
 )
 
 var opNames = []string{"read", "write", "openat", "connect"}
