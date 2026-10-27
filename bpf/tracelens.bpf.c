@@ -124,10 +124,12 @@ static __always_inline void record(__u32 tgid, __u32 op, __u64 dur, __s64 ret)
 	st->hist[log2_slot(dur)]++;
 	// Non-blocking I/O returns EAGAIN/EINPROGRESS as a normal step (Go's netpoller does
 	// this for every socket and pipe), so they aren't failures.
-	if (ret < 0 && ret != -EAGAIN && ret != -EINPROGRESS)
-		st->errors++;
-	else if (op == OP_READ || op == OP_WRITE)
+	if (ret < 0) {
+		if (ret != -EAGAIN && ret != -EINPROGRESS)
+			st->errors++;
+	} else if (op == OP_READ || op == OP_WRITE) {
 		st->bytes += ret;
+	}
 }
 
 static __always_inline void emit(__u32 tgid, __u32 tid, __u32 op, __u64 now, __u64 dur, __s64 ret)

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/georgezliao/tracelens/internal/hist"
 	"github.com/georgezliao/tracelens/internal/probe"
 )
 
@@ -52,7 +53,9 @@ func slowReads(t *testing.T, n int, delay time.Duration) {
 	// Raw syscalls: os.File reads on a pipe go through the Go netpoller, which would
 	// turn one blocking read into an EAGAIN read plus a later successful one.
 	fd := int(r.Fd())
-	syscall.SetNonblock(fd, false)
+	if err := syscall.SetNonblock(fd, false); err != nil {
+		t.Fatal(err)
+	}
 	buf := make([]byte, 1)
 	for range n {
 		if _, err := syscall.Read(fd, buf); err != nil {
@@ -81,7 +84,7 @@ func TestSlowReadsLandInRightBucket(t *testing.T) {
 		slow += after.Hist[i] - before.Hist[i]
 	}
 	if slow < n {
-		t.Errorf("reads >= 4ms = %d, want >= %d; hist delta %v", slow, n, after.Hist)
+		t.Errorf("reads >= 4ms = %d, want >= %d; hist delta %v", slow, n, hist.Sub(after.Hist[:], before.Hist[:]))
 	}
 }
 
@@ -107,7 +110,9 @@ func TestWouldBlockIsNotAnError(t *testing.T) {
 	defer r.Close()
 	defer w.Close()
 	fd := int(r.Fd())
-	syscall.SetNonblock(fd, true)
+	if err := syscall.SetNonblock(fd, true); err != nil {
+		t.Fatal(err)
+	}
 
 	before := readStats(t, p, probe.OpRead)
 	buf := make([]byte, 1)
@@ -122,5 +127,8 @@ func TestWouldBlockIsNotAnError(t *testing.T) {
 	}
 	if after.Errors != before.Errors {
 		t.Errorf("EAGAIN counted as error: delta %d", after.Errors-before.Errors)
+	}
+	if after.Bytes != before.Bytes {
+		t.Errorf("EAGAIN changed byte count: %d -> %d", before.Bytes, after.Bytes)
 	}
 }
