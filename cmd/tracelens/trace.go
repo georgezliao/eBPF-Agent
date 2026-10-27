@@ -93,12 +93,17 @@ type jsonEvent struct {
 	Comm       string `json:"comm"`
 }
 
-// capture records every event of tgid for dur and returns the summary. If out isn't
-// empty, each event is also written there as a JSON line.
-func capture(ctx context.Context, p *probe.Probe, tgid uint32, dur, minDur time.Duration, out string) (*summary, error) {
+// capture records every event of tgid for dur and returns the summary and the number of
+// events the kernel dropped meanwhile. If out isn't empty, each event is also written
+// there as a JSON line.
+func capture(ctx context.Context, p *probe.Probe, tgid uint32, dur, minDur time.Duration, out string) (*summary, uint64, error) {
+	lostBefore, _, err := p.Lost()
+	if err != nil {
+		return nil, 0, err
+	}
 	rd, err := p.Events()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rd.Close()
 
@@ -106,7 +111,7 @@ func capture(ctx context.Context, p *probe.Probe, tgid uint32, dur, minDur time.
 	if out != "" {
 		f, err := os.Create(out)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		defer f.Close()
 		// Buffered: one write(2) per event made the capturing agent the busiest writer on
@@ -117,7 +122,7 @@ func capture(ctx context.Context, p *probe.Probe, tgid uint32, dur, minDur time.
 	}
 
 	if err := p.SetTarget(tgid, minDur); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, dur)
 	defer cancel()
@@ -131,14 +136,15 @@ func capture(ctx context.Context, p *probe.Probe, tgid uint32, dur, minDur time.
 	for {
 		rec, err := rd.Read()
 		if errors.Is(err, ringbuf.ErrClosed) {
-			return s, nil
+			lostAfter, _, err := p.Lost()
+			return s, lostAfter - lostBefore, err
 		}
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		e, err := probe.Decode(rec.RawSample)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if e.Tgid != tgid {
 			continue // left in the ring by an earlier capture of another process
@@ -148,21 +154,6 @@ func capture(ctx context.Context, p *probe.Probe, tgid uint32, dur, minDur time.
 			enc.Encode(jsonEvent{e.TsNs, e.DurationNs, probe.Op(e.Op).String(), e.Ret, e.Tgid, e.Tid, e.CommString()})
 		}
 	}
-}
-
-// captureCountingDrops runs capture and also returns how many events the kernel dropped
-// during it.
-func captureCountingDrops(ctx context.Context, p *probe.Probe, tgid uint32, dur, minDur time.Duration, out string) (*summary, uint64, error) {
-	before, _, err := p.Lost()
-	if err != nil {
-		return nil, 0, err
-	}
-	s, err := capture(ctx, p, tgid, dur, minDur, out)
-	if err != nil {
-		return nil, 0, err
-	}
-	after, _, err := p.Lost()
-	return s, after - before, err
 }
 
 func runTrace(ctx context.Context, args []string) error {
@@ -183,7 +174,7 @@ func runTrace(ctx context.Context, args []string) error {
 	defer p.Close()
 
 	fmt.Printf("Tracing PID %d (%s) for %s...\n", *pid, comm(uint32(*pid)), *dur)
-	s, drops, err := captureCountingDrops(ctx, p, uint32(*pid), *dur, *minDur, *out)
+	s, drops, err := capture(ctx, p, uint32(*pid), *dur, *minDur, *out)
 	if err != nil {
 		return err
 	}
