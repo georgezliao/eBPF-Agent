@@ -11,6 +11,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 out=$(mktemp -d)
 trap 'kill $(jobs -p) 2>/dev/null; rm -f /var/tmp/tracelens-bulk' EXIT
+# Writeback left over from an earlier run would slow the WAL before the bulk write starts.
+sync
 
 bin/demo -rate 200 > "$out/demo.log" &
 demo=$!
