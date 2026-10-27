@@ -101,4 +101,15 @@ Raw mode at fixed rates with ring sizes from 16 KiB to 16 MiB ([`ringsweep.csv`]
 
 Up to 1M events/s, 256 KiB (the default) is enough. Unthrottled, the consumer delivers about 2.2M events/s and no ring size helps: a bigger buffer absorbs a burst, but under sustained overload it only delays when drops start. The variation between 40% and 48% is run-to-run noise in a single run per cell.
 
-The consumer decodes each event with `encoding/binary` and takes a mutex to update totals. Both are obvious suspects for the 2.2M/s ceiling, but the consumer hasn't been profiled.
+### After fixing the consumer
+
+The runs above used `binary.Read` to decode each event. Go microbenchmarks on the M4 host put that at 220 ns and two allocations per event, against 6 ns for the mutex-guarded totals update, so decoding was about half of the ~450 ns per event the consumer could spend at 2.2M events/s. Reading the fields by offset brought decode to 7.5 ns with no allocations.
+
+Rerunning the sweep at the default 256 KiB ring, three 5-second runs each ([`ringsweep_fast_decode.csv`](../benchmarks/results/ringsweep_fast_decode.csv)):
+
+| target | delivered per run | dropped |
+| --- | --- | --- |
+| 1M/s | 4.45M-4.49M | 0 |
+| unthrottled | 18.7M-19.2M (about 3.8M/s) | 5.25-6.26% |
+
+So the consumer ceiling went from about 2.2M to about 3.8M events/s. The overhead table and plot above still come from the old decoder; raw mode's agent CPU there is higher than it would be now, and hasn't been remeasured.

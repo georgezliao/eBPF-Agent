@@ -86,7 +86,9 @@ Measured in a 4-vCPU Lima VM on an M4 MacBook Air with a worst-case workload: ba
 | --- | --- | --- | --- |
 | no tracing | 10.0M | | |
 | in-kernel aggregation (default) | 5.81M | ~0% | ≤120 ns |
-| every event to userspace (`-export-all`) | 4.18M, ~8.7M events dropped per 5 s run | 30% of a core | ≤234 ns |
+| every event to userspace (`-export-all`) | 4.18M, ~8.7M events dropped per 5 s run* | 30% of a core* | ≤234 ns |
+
+\* Measured with the original `binary.Read` decoder. After switching to offset-based decoding, unthrottled drops fell to 5-6% (about 3.8M events/s delivered); agent CPU hasn't been remeasured.
 
 For syscalls that take microseconds or more, the per-call cost is a much smaller fraction. Latency comparisons at paced rates turned out to depend on how idle the VM was, so the writeup doesn't rely on them.
 

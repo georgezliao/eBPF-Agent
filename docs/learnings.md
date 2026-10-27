@@ -49,7 +49,7 @@ That basically means the paced latency comparisons between modes are measuring h
 
 At 500k and 1M events/s, going from 16 KiB to 256 KiB took drops from 8.5% and 14% down to zero. Unthrottled, drops were 40–48% at every size up to 16 MiB. The consumer was only getting through about 2.2M events/s, and if events come in faster than that forever, a bigger buffer just fills up a few milliseconds later. Obvious once I saw it, but I kind of expected the curve to at least bend.
 
-I haven't profiled the consumer. It decodes every event with `encoding/binary` (reflection) and takes a mutex per event, so those are my first suspects.
+Later I went back and benchmarked the consumer's two suspects separately. `binary.Read` took about 220 ns and two allocations per event, and the mutex-guarded update took 6 ns, so it was basically all decoding. Reading the fields by offset got decode down to 7.5 ns. After that, the consumer kept up with about 3.8M events/s instead of 2.2M, and unthrottled drops went from 40-48% to about 6%. It's a bit funny that half the "cost of exporting events to userspace" in my first benchmark was just a slow decoding function.
 
 ## Triggered capture sees the aftermath
 
@@ -70,6 +70,5 @@ The always-on histogram did catch the spike, since that's what fired the trigger
 ## Open questions
 
 - Is the 4x slower aggregation path at paced rates really cache misses? Bare metal with `perf stat` would answer it.
-- How much of the consumer's 2.2M events/s ceiling is `binary.Read`?
 - Would tracing `epoll_wait` or measuring off-CPU time make network-bound Go services visible, and what would it cost?
 - Per-CPU stats values are 352 bytes per CPU. On a 64-core machine the map would be around 180 MB. At some core count a shared hash with atomics is probably the better trade, but I haven't measured where.
