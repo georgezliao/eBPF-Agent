@@ -71,7 +71,24 @@ The workload latency columns in the CSV and the right-hand plot need a caveat, b
 | 500k reads/s | aggregated | 248 | 501 |
 | 500k reads/s | raw | 123 | 257 |
 
-Under full load, in-kernel aggregation is about half the cost of a ring buffer reservation per call, which matches the unthrottled throughput. At a paced rate the same aggregation code takes four times as long per run, while the ring buffer path barely changes. The likely explanation is that the per-CPU stats value and hash bucket are cold in cache after each 1 ms pause, while the ring buffer's hot data keeps getting touched by the consumer on another CPU. That hasn't been checked with cache-miss counters (the VM doesn't expose a PMU), so treat it as a guess.
+These are single runs, and the 500k rows turned out not to be reproducible.
+
+### Repeated runs
+
+Later, while checking the cost of read-wait tracking, each configuration was run three times unthrottled and three to six times at 500k reads/s, with and without that change ([`probe_cost_repeat.csv`](../benchmarks/results/probe_cost_repeat.csv)). Ranges of ns per program run:
+
+| load | mode | without read wait | with read wait |
+| --- | --- | --- | --- |
+| unthrottled | aggregated | 72–85 | 67–75 |
+| unthrottled | raw | 148–215 | 154–171 |
+| 500k reads/s | aggregated | 79–169 | 85–174 |
+| 500k reads/s | raw | 217–239 | 210–341 |
+
+Read-wait tracking adds a hash lookup to every `read` exit and a delete to every `close`, and that doesn't show up above the run-to-run spread.
+
+At 500k reads/s the aggregated path varies by 2x between identical runs, and in every repeated run it was cheaper than the raw path. The single run in the first table (248 ns aggregated, 123 ns raw) isn't representative. An earlier version of this page explained it with cold caches; with these runs there's nothing left to explain. The paced numbers in this VM are too noisy to say more than "aggregation is cheaper per run".
+
+Raw mode costs more per run than it did in the first table (about 150–170 ns versus 117 ns unthrottled). Those runs used the old decoder, which left 40–48% of reservations failing, and a failed `bpf_ringbuf_reserve` returns before writing anything. That might account for the difference, but it hasn't been isolated.
 
 ## The latency numbers are confounded
 
