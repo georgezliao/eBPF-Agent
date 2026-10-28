@@ -1,6 +1,6 @@
 # Architecture
 
-TraceLens answers one question about a Linux process: where is it waiting? It times five syscalls (`read`, `write`, `openat`, `connect`, and `fsync`/`fdatasync` counted together) plus the time each thread spends runnable but not running, keeps cheap per-process histograms of those all the time, and records individual calls only for one process at a time and only when asked.
+TraceLens answers one question about a Linux process: where is it waiting? It times five syscalls (`read`, `write`, `openat`, `connect`, and `fsync`/`fdatasync` counted together) plus the time each thread spends runnable but not running and how long non-blocking reads wait for data, keeps cheap per-process histograms of those all the time, and records individual calls only for one process at a time and only when asked.
 
 ## Data flow
 
@@ -28,6 +28,8 @@ TraceLens answers one question about a Linux process: where is it waiting? It ti
 The tracepoint context structs are written by hand from `/sys/kernel/tracing/events/syscalls/*/format` instead of coming from `vmlinux.h`. Every syscall exit tracepoint has the same layout (8-byte common header, `int __syscall_nr`, `long ret` at offset 16), so one struct covers all of them.
 
 **Run-queue delay.** `sched_wakeup` and `sched_wakeup_new` record when a thread became runnable. `sched_switch` records the same for the outgoing thread if it is still runnable (preempted, or `prev_state == 0`), and for the incoming thread computes how long it waited. These hooks use `tp_btf` because the classic tracepoint format only gives the TID of the woken task, and per-process attribution needs its TGID. A three-field `struct task_struct` marked `preserve_access_index` is enough: clang emits CO-RE relocations for `pid`, `tgid` and `comm`, and the loader resolves them against the running kernel's BTF.
+
+**Read wait.** A non-blocking read with no data returns EAGAIN right away, and the program waits in `epoll_wait` (or `poll`, or Go's netpoller) before reading again. Neither read is slow, so the `read` op can't see the wait. The `read` enter probe also saves the fd, and at exit a read that returned EAGAIN stores its timestamp in `read_wait` keyed by `(tgid, fd)`, unless an earlier one is already there. The next read on that fd that returns anything else removes the entry and delivers the gap as the `readwait` pseudo-op, with the second read's return value. The key is the process and fd, not the thread, because the retry often runs on a different thread. `sys_enter_close` deletes the entry so a reused fd number doesn't inherit it.
 
 **Aggregation.** `stats` is a per-CPU hash keyed by `(tgid, op)` holding a count, error count, byte count, total time and a 40-slot log2 histogram of durations. Being per-CPU means the hot path does plain increments with no atomics; the cost is memory (each value is 352 bytes per CPU) and a userspace sum across CPUs on every read.
 

@@ -1,6 +1,6 @@
 # TraceLens
 
-TraceLens is a Linux eBPF tool that shows, per process, how long syscalls take and how long threads wait for a CPU. It traces `read`, `write`, `openat`, `connect`, `fsync`/`fdatasync` and run-queue delay, keeps per-process latency histograms inside the kernel, and only streams individual calls to userspace for one process at a time, when asked or when a latency threshold trips.
+TraceLens is a Linux eBPF tool that shows, per process, how long syscalls take and how long threads wait for a CPU. It traces `read`, `write`, `openat`, `connect`, `fsync`/`fdatasync`, run-queue delay and how long non-blocking reads wait for data, keeps per-process latency histograms inside the kernel, and only streams individual calls to userspace for one process at a time, when asked or when a latency threshold trips.
 
 It's written in Go and C with [cilium/ebpf](https://github.com/cilium/ebpf) and `bpf2go`. The output below is from the [demo](docs/demo.md) while a bulk write was slowing its fsyncs; the `trace` part was printed by the agent's triggered capture, which runs the same code as `tracelens trace`.
 
@@ -23,6 +23,8 @@ longest syscalls:
   ...
 ```
 
+This output was captured before the `RWAIT p99` column (read wait) was added to `top`.
+
 ## Commands
 
 ```
@@ -34,9 +36,9 @@ tracelens agent [-listen :9090] [-interval 1s]
 
 - **`top`** prints syscall rates, error rates and p99 per process every interval, sorted by syscall rate.
 - **`trace`** follows one process for a fixed time and reports exact p50/p99/max per op, the longest calls, and how many events were dropped. `-min` filters short calls in the kernel; `-out` writes every call as a JSON line.
-- **`agent`** serves Prometheus metrics at `/metrics`: per-op call, error and byte counters, latency histograms, run-queue delay and drop counters. Labels are per op only, with no PID label, so the number of series stays fixed. With `-trigger`, it captures whichever process's interval p99 for `-trigger-op` reaches the threshold, using the same code as `trace`, and writes the capture to `-dir`.
+- **`agent`** serves Prometheus metrics at `/metrics`: per-op call, error and byte counters, latency histograms, run-queue delay and read wait histograms, and drop counters. Labels are per op only, with no PID label, so the number of series stays fixed. With `-trigger`, it captures whichever process's interval p99 for `-trigger-op` reaches the threshold, using the same code as `trace`, and writes the capture to `-dir`.
 
-Errors exclude EAGAIN and EINPROGRESS, which non-blocking I/O returns as a normal step.
+Errors exclude EAGAIN and EINPROGRESS, which non-blocking I/O returns as a normal step. Read wait (`readwait`, `RWAIT`) is the time from a `read` returning EAGAIN until the next `read` on the same fd returns; for Go programs, which never block in `read`, it's the only place socket waits show up.
 
 ## How it works
 
@@ -97,7 +99,7 @@ For syscalls that take microseconds or more, the per-call cost is a much smaller
 The full list is in [docs/limitations.md](docs/limitations.md). The ones most likely to matter:
 
 - **Syscall duration isn't device latency**, and read/write bytes aren't disk bytes.
-- **Socket I/O in Go, Node, nginx and other epoll-based programs looks fast**, because their reads return EAGAIN and the waiting happens in `epoll_wait`, which isn't traced. File I/O, fsync and run-queue delay still show up.
+- **Socket waits in epoll-based programs only show up as read wait**, and only for `read(2)` calls that hit EAGAIN first. `recv`, writes and programs that wait in `epoll_wait` before their first read aren't covered. On keep-alive connections, read wait includes the idle time between requests.
 - **p99 in `top`, `/metrics` and the trigger is a log2 bucket upper bound**, up to 2x the true value. `trace` is exact.
 - **Triggered captures start up to one interval after the spike**, so they can miss its peak.
 - **One traced process at a time**, and PIDs are from the host PID namespace.

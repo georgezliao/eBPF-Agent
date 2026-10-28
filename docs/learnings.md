@@ -12,6 +12,14 @@ What's going on is that Go puts pipes and sockets in non-blocking mode. A read w
 
 Two things came out of that. EAGAIN and EINPROGRESS stopped counting as errors, because otherwise every healthy Go process looked like it was failing half its reads. And the demo ended up being about `fdatasync` instead of network reads, since regular file I/O in Go is still plain blocking syscalls. I think the "real" fix for network services would be off-CPU time or tracing `epoll_wait`, but I haven't tried either.
 
+## Measuring the wait between two fast reads
+
+Later I came back to this. Off-CPU time and `epoll_wait` both have the same problem: one `epoll_wait` covers every fd the program is waiting on, and an idle server is "off CPU" most of the time anyway, so neither tells you which connection was slow. What I ended up doing is simpler. A read that returns EAGAIN records a timestamp keyed by (process, fd), and the next read on that fd that actually returns something closes it out. It's keyed by fd and not by thread because Go retries the read from whatever thread picks up the goroutine. The 20-pipe-read test that used to show nothing now shows 20 waits of about 5 ms, which is what was really happening.
+
+Then I tried it on a Go HTTP client calling a server with a 50 ms handler, with the client sleeping 100 ms between requests. Both processes reported a read wait of about 155 ms, the full cycle and not the 50 ms I expected. I think it's because Go's HTTP server and client both keep a read pending on a keep-alive connection, so the wait includes the idle gap between requests. With keep-alive turned off, the client showed 51 ms and the server under 1 ms, which matches. So read wait is the response time only when nothing reads the connection while it's idle, and that's not the case for most Go HTTP code. It's still more than zero information, but it's not the clean "your backend got slow" number I was hoping for.
+
+Also, fds get reused. If a program gets EAGAIN on fd 7, closes it, and opens something new that lands on 7, the first read on the new file would report a wait that started on the old one. So `close` is traced now too, just to delete the entry. My test for this first failed with `EINVAL` from `dup3`, because I was trying to move the new pipe onto the old fd number and the kernel had already given it that number.
+
 ## Tracing yourself never goes quiet
 
 After adding run-queue delay, one of the integration tests started hanging forever. The test traces its own process and has a `drain()` helper that reads events until nothing arrives for 200 ms.
@@ -35,7 +43,9 @@ It also had opinions I didn't take. It wanted me to drop the ring-size parameter
 
 My mental model was that aggregating in BPF maps is cheap and shipping events to userspace is expensive. That's true for the agent: aggregated mode used about 0% of a core at every rate, while raw mode used about 30% of a core at 1M reads/s and saturated a full core unthrottled.
 
-But the cost per syscall, which the traced program pays, was more complicated. With `kernel.bpf_stats_enabled` on and the workload running flat out, the aggregation path took about 60 ns per program run versus 117 ns for the ring buffer path. When the workload was paced to 500k reads/s, the aggregation path went up to 248 ns per run while the ring buffer path stayed at 123 ns. Same code, four times slower. My guess is cache: with 1 ms pauses between bursts, the per-CPU stats value and its hash bucket go cold, while the ring buffer keeps getting touched by the consumer on another CPU. I couldn't check, because the VM doesn't expose hardware counters.
+But the cost per syscall, which the traced program pays, was more complicated. With `kernel.bpf_stats_enabled` on and the workload running flat out, the aggregation path took about 60 ns per program run versus 117 ns for the ring buffer path. When the workload was paced to 500k reads/s, the aggregation path went up to 248 ns per run while the ring buffer path stayed at 123 ns. Same code, four times slower. My guess was cache: with 1 ms pauses between bursts, the per-CPU stats value and its hash bucket go cold, while the ring buffer keeps getting touched by the consumer on another CPU.
+
+That guess sat in the docs for a while, with a plan item to check it on bare metal with `perf stat`. Then I reran the paced benchmark for an unrelated reason and got 85 ns. So I ran it nine more times. The aggregated path went anywhere from 79 to 174 ns per run, and the raw path from 210 to 341 ns, so raw was the slower one in every run. The 248 was one unlucky run, and I'd built a cache theory on top of a single sample. Lesson for me: run anything surprising at least three times before explaining it.
 
 ## Idle CPUs make syscalls slower, which wrecked my latency numbers
 
@@ -69,6 +79,5 @@ The always-on histogram did catch the spike, since that's what fired the trigger
 
 ## Open questions
 
-- Is the 4x slower aggregation path at paced rates really cache misses? Bare metal with `perf stat` would answer it.
-- Would tracing `epoll_wait` or measuring off-CPU time make network-bound Go services visible, and what would it cost?
+- Is there a cheap way to separate idle keep-alive time from real response time in read wait? Maybe timing from the last `write` on the same fd instead of from the EAGAIN, but that assumes request/response.
 - Per-CPU stats values are 352 bytes per CPU. On a 64-core machine the map would be around 180 MB. At some core count a shared hash with atomics is probably the better trade, but I haven't measured where.
