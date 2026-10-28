@@ -26,11 +26,13 @@ const (
 	OpOpenat
 	OpConnect
 	OpFsync // fsync and fdatasync
-	OpRunq  // run-queue delay, not a syscall: wakeup or preemption until back on a CPU
+	// Ops from here on aren't syscalls.
+	OpRunq     // run-queue delay: wakeup or preemption until back on a CPU
+	OpReadWait // non-blocking read: first EAGAIN until a read on the same fd returns
 	NumOps
 )
 
-var opNames = []string{"read", "write", "openat", "connect", "fsync", "runq"}
+var opNames = []string{"read", "write", "openat", "connect", "fsync", "runq", "readwait"}
 
 func (o Op) String() string {
 	if int(o) < len(opNames) {
@@ -49,8 +51,12 @@ func ParseOp(name string) (Op, error) {
 	return 0, fmt.Errorf("unknown op %q (want one of %s)", name, strings.Join(opNames, ", "))
 }
 
-// Ops lists every op in display order, runq last.
-var Ops = []Op{OpRead, OpWrite, OpOpenat, OpConnect, OpFsync, OpRunq}
+// Ops lists every op in display order, syscalls first.
+var Ops = []Op{OpRead, OpWrite, OpOpenat, OpConnect, OpFsync, OpRunq, OpReadWait}
+
+// IsSyscall reports whether o times a single syscall, as opposed to a wait that
+// spans several.
+func (o Op) IsSyscall() bool { return o < OpRunq }
 
 type (
 	Key   = tracelensStatsKey

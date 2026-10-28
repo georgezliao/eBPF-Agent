@@ -25,6 +25,18 @@ type tracelensEvent struct {
 	_          [4]byte
 }
 
+type tracelensFdKey struct {
+	_    structs.HostLayout
+	Tgid uint32
+	Fd   uint32
+}
+
+type tracelensInflight struct {
+	_  structs.HostLayout
+	Ts uint64
+	Fd uint64
+}
+
 type tracelensOpStats struct {
 	_       structs.HostLayout
 	Count   uint64
@@ -55,8 +67,10 @@ const (
 	tracelensMapConfig          = "config"
 	tracelensMapEvents          = "events"
 	tracelensMapLost            = "lost"
+	tracelensMapReadWait        = "read_wait"
 	tracelensMapRunnable        = "runnable"
 	tracelensMapStats           = "stats"
+	tracelensProgEnterClose     = "enter_close"
 	tracelensProgEnterConnect   = "enter_connect"
 	tracelensProgEnterFdatasync = "enter_fdatasync"
 	tracelensProgEnterFsync     = "enter_fsync"
@@ -117,6 +131,7 @@ type tracelensSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type tracelensProgramSpecs struct {
+	EnterClose     *ebpf.ProgramSpec `ebpf:"enter_close"`
 	EnterConnect   *ebpf.ProgramSpec `ebpf:"enter_connect"`
 	EnterFdatasync *ebpf.ProgramSpec `ebpf:"enter_fdatasync"`
 	EnterFsync     *ebpf.ProgramSpec `ebpf:"enter_fsync"`
@@ -142,6 +157,7 @@ type tracelensMapSpecs struct {
 	Config   *ebpf.MapSpec `ebpf:"config"`
 	Events   *ebpf.MapSpec `ebpf:"events"`
 	Lost     *ebpf.MapSpec `ebpf:"lost"`
+	ReadWait *ebpf.MapSpec `ebpf:"read_wait"`
 	Runnable *ebpf.MapSpec `ebpf:"runnable"`
 	Stats    *ebpf.MapSpec `ebpf:"stats"`
 }
@@ -177,6 +193,7 @@ type tracelensMaps struct {
 	Config   *ebpf.Map `ebpf:"config"`
 	Events   *ebpf.Map `ebpf:"events"`
 	Lost     *ebpf.Map `ebpf:"lost"`
+	ReadWait *ebpf.Map `ebpf:"read_wait"`
 	Runnable *ebpf.Map `ebpf:"runnable"`
 	Stats    *ebpf.Map `ebpf:"stats"`
 }
@@ -187,6 +204,7 @@ func (m *tracelensMaps) Close() error {
 		m.Config,
 		m.Events,
 		m.Lost,
+		m.ReadWait,
 		m.Runnable,
 		m.Stats,
 	)
@@ -203,6 +221,7 @@ type tracelensVariables struct {
 //
 // It can be passed to loadTracelensObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tracelensPrograms struct {
+	EnterClose     *ebpf.Program `ebpf:"enter_close"`
 	EnterConnect   *ebpf.Program `ebpf:"enter_connect"`
 	EnterFdatasync *ebpf.Program `ebpf:"enter_fdatasync"`
 	EnterFsync     *ebpf.Program `ebpf:"enter_fsync"`
@@ -222,6 +241,7 @@ type tracelensPrograms struct {
 
 func (p *tracelensPrograms) Close() error {
 	return _TracelensClose(
+		p.EnterClose,
 		p.EnterConnect,
 		p.EnterFdatasync,
 		p.EnterFsync,

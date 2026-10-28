@@ -3,7 +3,8 @@
 // Syscall latency and run-queue delay per process. Each syscall entry stores a timestamp
 // keyed by TID; the matching exit computes the duration and folds it into per-CPU stats
 // keyed by (tgid, op). Run-queue delay (wakeup to running) goes into the same map as the
-// pseudo-op OP_RUNQ. Detailed per-call events only leave the kernel for the one TGID that
+// pseudo-op OP_RUNQ, and so does OP_READ_WAIT: for a non-blocking read that returned
+// EAGAIN, the time until a read on the same fd got data. Detailed per-call events only leave the kernel for the one TGID that
 // userspace selects in `config`.
 
 #include "headers/types.h"
@@ -12,10 +13,17 @@
 #define EAGAIN 11
 #define EINPROGRESS 115
 
-enum op { OP_READ, OP_WRITE, OP_OPENAT, OP_CONNECT, OP_FSYNC, OP_RUNQ, NUM_OPS };
+enum op { OP_READ, OP_WRITE, OP_OPENAT, OP_CONNECT, OP_FSYNC, OP_RUNQ, OP_READ_WAIT, NUM_OPS };
 
 // Context layouts from /sys/kernel/tracing/events/syscalls/sys_{enter,exit}_*/format.
 // Every syscall tracepoint has the same 8-byte common header and int syscall number.
+// read and close both take the fd as their first argument.
+struct sys_enter_fd_ctx {
+	__u64 common;
+	__s32 nr;
+	__u64 fd;
+};
+
 struct sys_exit_ctx {
 	__u64 common;
 	__s32 nr;
@@ -70,14 +78,35 @@ struct {
 	__type(value, struct trace_config);
 } config SEC(".maps");
 
+struct inflight {
+	__u64 ts;
+	__u64 fd; // read only
+};
+
 // In-flight syscalls by TID. LRU so entries left by threads that died mid-syscall get
 // evicted; a reused TID overwrites its stale entry at its first syscall entry.
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__uint(max_entries, 16384);
 	__type(key, __u32);
-	__type(value, __u64);
+	__type(value, struct inflight);
 } active SEC(".maps");
+
+struct fd_key {
+	__u32 tgid;
+	__u32 fd;
+};
+
+// First EAGAIN read per (tgid, fd) that hasn't been followed by a completed read yet.
+// Keyed by process and fd rather than thread, because Go (and any epoll loop with a
+// thread pool) may retry the read from a different thread. close() deletes the entry so
+// a reused fd number doesn't inherit it; LRU covers fds closed some other way.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, struct fd_key);
+	__type(value, __u64);
+} read_wait SEC(".maps");
 
 // Runnable-since timestamps by TID, for run-queue delay.
 struct {
@@ -134,11 +163,11 @@ static __always_inline __u32 log2_slot(__u64 v)
 	return r < HIST_SLOTS ? r : HIST_SLOTS - 1;
 }
 
-static __always_inline int on_enter(void)
+static __always_inline int on_enter(__u64 fd)
 {
 	__u32 tid = (__u32)bpf_get_current_pid_tgid();
-	__u64 ts = bpf_ktime_get_ns();
-	bpf_map_update_elem(&active, &tid, &ts, BPF_ANY);
+	struct inflight in = { .ts = bpf_ktime_get_ns(), .fd = fd };
+	bpf_map_update_elem(&active, &tid, &in, BPF_ANY);
 	return 0;
 }
 
@@ -210,29 +239,63 @@ static __always_inline void deliver(__u32 tgid, __u32 tid, __u32 op, __u64 now, 
 		emit(tgid, tid, op, now, dur, ret, task);
 }
 
+// track_read_wait handles a finished read on fd. With non-blocking I/O the read itself
+// is fast either way; the wait is the gap between the first EAGAIN and the read that
+// finally returns data, EOF or a real error.
+static __always_inline void track_read_wait(__u32 tgid, __u32 tid, __u32 fd, __u64 now, __s64 ret)
+{
+	struct fd_key key = { .tgid = tgid, .fd = fd };
+	if (ret == -EAGAIN) {
+		// NOEXIST keeps the first attempt when the reader retries more than once.
+		bpf_map_update_elem(&read_wait, &key, &now, BPF_NOEXIST);
+		return;
+	}
+	__u64 *since = bpf_map_lookup_elem(&read_wait, &key);
+	if (!since)
+		return;
+	__u64 dur = now - *since;
+	bpf_map_delete_elem(&read_wait, &key);
+	deliver(tgid, tid, OP_READ_WAIT, now, dur, ret, 0);
+}
+
 static __always_inline int on_exit(__u32 op, __s64 ret)
 {
 	__u64 id = bpf_get_current_pid_tgid();
 	__u32 tid = (__u32)id, tgid = id >> 32;
 
-	__u64 *start = bpf_map_lookup_elem(&active, &tid);
-	if (!start)
+	struct inflight *in = bpf_map_lookup_elem(&active, &tid);
+	if (!in)
 		return 0; // entry happened before we attached
 	__u64 now = bpf_ktime_get_ns();
-	__u64 dur = now - *start;
+	__u64 dur = now - in->ts;
+	__u32 fd = in->fd;
 	bpf_map_delete_elem(&active, &tid);
 
 	deliver(tgid, tid, op, now, dur, ret, 0);
+	if (op == OP_READ)
+		track_read_wait(tgid, tid, fd, now, ret);
 	return 0;
 }
 
 #define SYSCALL_PROBES(name, op)                                         \
 	SEC("tracepoint/syscalls/sys_enter_" #name)                      \
-	int enter_##name(void *ctx) { return on_enter(); }               \
+	int enter_##name(void *ctx) { return on_enter(0); }              \
 	SEC("tracepoint/syscalls/sys_exit_" #name)                       \
 	int exit_##name(struct sys_exit_ctx *ctx) { return on_exit(op, ctx->ret); }
 
-SYSCALL_PROBES(read, OP_READ)
+SEC("tracepoint/syscalls/sys_enter_read")
+int enter_read(struct sys_enter_fd_ctx *ctx) { return on_enter(ctx->fd); }
+SEC("tracepoint/syscalls/sys_exit_read")
+int exit_read(struct sys_exit_ctx *ctx) { return on_exit(OP_READ, ctx->ret); }
+
+SEC("tracepoint/syscalls/sys_enter_close")
+int enter_close(struct sys_enter_fd_ctx *ctx)
+{
+	struct fd_key key = { .tgid = bpf_get_current_pid_tgid() >> 32, .fd = ctx->fd };
+	bpf_map_delete_elem(&read_wait, &key);
+	return 0;
+}
+
 SYSCALL_PROBES(write, OP_WRITE)
 SYSCALL_PROBES(openat, OP_OPENAT)
 SYSCALL_PROBES(connect, OP_CONNECT)
