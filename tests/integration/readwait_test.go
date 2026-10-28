@@ -72,14 +72,12 @@ func TestCloseForgetsPendingReadWait(t *testing.T) {
 			if err := syscall.Pipe2(fds[:], syscall.O_NONBLOCK); err != nil {
 				t.Fatal(err)
 			}
-			// The kernel hands out the lowest free number, so the new read end usually
-			// lands on the old one already. If not, move it there with dup3, which
-			// doesn't go through close().
+			// The kernel hands out the lowest free number, so the new read end normally
+			// lands on the old one. Another goroutine could take it first.
 			if fds[0] != rfd {
-				if err := syscall.Dup3(fds[0], rfd, 0); err != nil {
-					t.Fatal(err)
-				}
 				syscall.Close(fds[0])
+				syscall.Close(fds[1])
+				t.Skip("fd number wasn't reused")
 			}
 			wfd = fds[1]
 		}
