@@ -77,8 +77,8 @@ func (m *metrics) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "tracelens_bpf_run_seconds_total %g\n", runtime.Seconds())
 }
 
-// writeMetrics renders the Prometheus text format. Run-queue delay gets its own family
-// (still labelled op="runq") since it isn't a syscall.
+// writeMetrics renders the Prometheus text format. Run-queue delay and read wait get
+// their own families (still labelled with their op) since they aren't syscalls.
 func writeMetrics(w io.Writer, totals *[probe.NumOps]probe.Stats, lostEvents, lostStats uint64) {
 	fmt.Fprintln(w, "# HELP tracelens_syscalls_total Completed read, write, openat, connect and fsync (incl. fdatasync) syscalls.")
 	fmt.Fprintln(w, "# TYPE tracelens_syscalls_total counter")
@@ -103,6 +103,9 @@ func writeMetrics(w io.Writer, totals *[probe.NumOps]probe.Stats, lostEvents, lo
 	fmt.Fprintln(w, "# HELP tracelens_runq_delay_seconds Time a thread spent runnable before getting a CPU.")
 	fmt.Fprintln(w, "# TYPE tracelens_runq_delay_seconds histogram")
 	writeHist(w, "tracelens_runq_delay_seconds", probe.OpRunq, &totals[probe.OpRunq])
+	fmt.Fprintln(w, "# HELP tracelens_read_wait_seconds Time from a read returning EAGAIN until a read on the same fd returned.")
+	fmt.Fprintln(w, "# TYPE tracelens_read_wait_seconds histogram")
+	writeHist(w, "tracelens_read_wait_seconds", probe.OpReadWait, &totals[probe.OpReadWait])
 	fmt.Fprintln(w, "# HELP tracelens_events_dropped_total Trace events lost because the ring buffer was full.")
 	fmt.Fprintln(w, "# TYPE tracelens_events_dropped_total counter")
 	fmt.Fprintf(w, "tracelens_events_dropped_total %d\n", lostEvents)

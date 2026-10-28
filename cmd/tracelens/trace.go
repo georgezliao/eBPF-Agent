@@ -24,7 +24,7 @@ const keepLongest = 10
 type summary struct {
 	durs    map[probe.Op][]time.Duration
 	errs    map[probe.Op]int
-	longest []probe.Event // syscalls only (runq waits would crowd them out), longest first
+	longest []probe.Event // syscalls only (runq and read waits would crowd them out), longest first
 }
 
 func newSummary() *summary {
@@ -37,7 +37,7 @@ func (s *summary) add(e probe.Event) {
 	if probe.Failed(e.Ret) {
 		s.errs[op]++
 	}
-	if op == probe.OpRunq {
+	if !op.IsSyscall() {
 		return
 	}
 	i := sort.Search(len(s.longest), func(i int) bool { return s.longest[i].DurationNs < e.DurationNs })
