@@ -2,10 +2,10 @@
 //
 // Syscall latency and run-queue delay per process. Each syscall entry stores a timestamp
 // keyed by TID; the matching exit computes the duration and folds it into per-CPU stats
-// keyed by (tgid, op). Run-queue delay (wakeup to running) goes into the same map as the
-// pseudo-op OP_RUNQ, and so does OP_READ_WAIT: for a non-blocking read that returned
-// EAGAIN, the time until a read on the same fd got data. Detailed per-call events only leave the kernel for the one TGID that
-// userspace selects in `config`.
+// keyed by (tgid, op). Two pseudo-ops go into the same map: OP_RUNQ, run-queue delay
+// (wakeup to running), and OP_READ_WAIT, the time from a read returning EAGAIN until a
+// read on the same fd returns something else. Detailed per-call events only leave the
+// kernel for the one TGID that userspace selects in `config`.
 
 #include "headers/types.h"
 
@@ -80,7 +80,7 @@ struct {
 
 struct inflight {
 	__u64 ts;
-	__u64 fd; // read only
+	__u64 fd; // set by read's enter probe, 0 for other syscalls
 };
 
 // In-flight syscalls by TID. LRU so entries left by threads that died mid-syscall get
@@ -250,6 +250,8 @@ static __always_inline void track_read_wait(__u32 tgid, __u32 tid, __u32 fd, __u
 		bpf_map_update_elem(&read_wait, &key, &now, BPF_NOEXIST);
 		return;
 	}
+	// Lookup and delete aren't atomic: two threads finishing reads on the same fd at
+	// once can both report the wait. Rare, and not worth a lock in this path.
 	__u64 *since = bpf_map_lookup_elem(&read_wait, &key);
 	if (!since)
 		return;
