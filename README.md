@@ -38,7 +38,7 @@ tracelens agent [-listen :9090] [-interval 1s]
 - **`trace`** follows one process for a fixed time and reports exact p50/p99/max per op, the longest calls, and how many events were dropped. `-min` filters short calls in the kernel; `-out` writes every call as a JSON line.
 - **`agent`** serves Prometheus metrics at `/metrics`: per-op call, error and byte counters, latency histograms, run-queue delay and read wait histograms, and drop counters. Labels are per op only, with no PID label, so the number of series stays fixed. With `-trigger`, it captures whichever process's interval p99 for `-trigger-op` reaches the threshold, using the same code as `trace`, and writes the capture to `-dir`.
 
-Errors exclude EAGAIN and EINPROGRESS, which non-blocking I/O returns as a normal step. Read wait (`readwait`, `RWAIT`) is the time from a `read` returning EAGAIN until the next `read` on the same fd returns; for Go programs, which never block in `read`, it's the only place socket waits show up.
+Errors exclude EAGAIN and EINPROGRESS, which non-blocking I/O returns as a normal step. Read wait (`readwait`, `RWAIT`) is the time from a `read` returning EAGAIN until the next `read` on the same fd returns; for Go sockets and pipes, which never block in `read`, it's the only place their waits show up.
 
 ## How it works
 

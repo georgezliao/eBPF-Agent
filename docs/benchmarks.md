@@ -75,7 +75,7 @@ These are single runs, and the 500k rows turned out not to be reproducible.
 
 ### Repeated runs
 
-Later, while checking the cost of read-wait tracking, each configuration was run three times unthrottled and three to six times at 500k reads/s, with and without that change ([`probe_cost_repeat.csv`](../benchmarks/results/probe_cost_repeat.csv)). Ranges of ns per program run:
+Later, while checking the cost of read-wait tracking, each configuration was run in the same Lima VM three times unthrottled and three to six times at 500k reads/s, with and without that change ([`probe_cost_repeat.csv`](../benchmarks/results/probe_cost_repeat.csv)). Ranges of ns per program run:
 
 | load | mode | without read wait | with read wait |
 | --- | --- | --- | --- |
@@ -84,7 +84,7 @@ Later, while checking the cost of read-wait tracking, each configuration was run
 | 500k reads/s | aggregated | 79–169 | 85–174 |
 | 500k reads/s | raw | 217–239 | 210–341 |
 
-Read-wait tracking adds a hash lookup to every `read` exit and a delete to every `close`, and that doesn't show up above the run-to-run spread.
+Read-wait tracking adds a hash lookup to every `read` exit, and for this workload (blocking reads, no EAGAIN, no `close` in the loop) that doesn't show up above the run-to-run spread. The insert on EAGAIN and the delete on `close` weren't exercised, so EAGAIN-heavy or close-heavy workloads aren't covered by these numbers.
 
 At 500k reads/s the aggregated path varies by 2x between identical runs, and in every repeated run it was cheaper than the raw path. The single run in the first table (248 ns aggregated, 123 ns raw) isn't representative. An earlier version of this page explained it with cold caches; with these runs there's nothing left to explain. The paced numbers in this VM are too noisy to say more than "aggregation is cheaper per run".
 

@@ -8,7 +8,7 @@ What TraceLens measures, and where those measurements stop meaning what they sou
 - **Bytes are what `read`/`write` returned.** Page-cache hits, pipes and sockets all count. This is not disk I/O.
 - **`connect` duration is the syscall, not the TCP handshake.** For a non-blocking socket, `connect` returns EINPROGRESS immediately and the handshake finishes later, outside any traced syscall.
 - **`fsync` covers both `fsync` and `fdatasync`.**
-- **Read wait** is the time from a `read` returning EAGAIN to the next `read` on the same fd returning something else. On a request/response connection where the reader only reads when it expects a reply, that's the peer's response time. But Go's HTTP server and client both keep a read pending on idle keep-alive connections, so there it also includes the gap between requests. In a test with a 50 ms handler and a client sleeping 100 ms between requests, both sides reported about 155 ms with keep-alive and the client reported 51 ms without it.
+- **Read wait** is the time from a `read` returning EAGAIN to the next `read` on the same fd returning something else. On a request/response connection where the reader only reads when it expects a reply, that's the peer's response time. But Go's HTTP server and client both keep a read pending on idle keep-alive connections, so there it also includes the gap between requests. In a one-off check in the Lima VM (a throwaway Go program, not in this repo) with a 50 ms handler and a client sleeping 100 ms between requests, both sides reported about 155 ms with keep-alive and the client reported 51 ms without it. For the same reason, `agent -trigger-op readwait` fires on idle keep-alive connections.
 - **Run-queue delay** is the time from wakeup (or preemption) until the thread is switched in. A `sched_wakeup` for a task that is already queued moves its timestamp forward, so waits can be slightly undercounted.
 - **p99 in `top`, the agent's trigger, and `/metrics` comes from log2 buckets.** It is the upper bound of the bucket holding the 99th-percentile sample, so it can be up to 2x the real value. `trace` reports exact durations.
 
@@ -40,6 +40,7 @@ File I/O (regular files are always blocking), `fsync` and run-queue delay show u
 ## Resource limits
 
 - `stats` holds 8192 keys, at most seven per process (one per op). Each value is 352 bytes per CPU. When it fills, new processes go unrecorded and `tracelens_stats_dropped_total` counts the misses.
+- `read_wait` holds 16384 pending (process, fd) pairs system-wide, and an idle connection with a read pending holds one until data arrives. Past that, LRU eviction drops the oldest waits without any counter.
 - The ring buffer drops events when the consumer falls behind; the count is reported by `trace`, captures and `tracelens_events_dropped_total`. [benchmarks.md](benchmarks.md) shows where that starts.
 
 ## Kernel requirements
