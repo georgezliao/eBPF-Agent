@@ -101,6 +101,36 @@ At paced rates, raw mode shows a lower workload p99 than baseline (1.0 µs vs 1.
 
 A busy vCPU elsewhere in the VM cuts the workload's p99 by more than half. Raw mode's consumer is exactly such a busy thread. So at paced rates, latency differences between modes mostly reflect how idle the VM is, not tracing cost, and the throughput and BPF-time numbers above are the ones to trust. Fixing this properly needs CPU isolation and a pinned frequency, which this setup can't do.
 
+## Open-loop rerun
+
+The numbers above came from a `loadgen` that slept between 1 ms slots and timed each call from the moment it started, so a stall counted as one slow call. It now follows a fixed schedule: call n is due at start + n/rate, delayed calls run back to back, and each sample records both service time (call start to return) and response time (due time to return). It spins between calls instead of sleeping, which should also reduce the idle-CPU effect above, though that wasn't tested separately.
+
+Medians of three 5-second runs in the same Lima VM, with every hook loaded ([`overhead_openloop.csv`](../benchmarks/results/overhead_openloop.csv)). The range is the lowest and highest of the three runs:
+
+| target reads/s | mode | service p99 | response p99 | response p99 range | agent CPU |
+| --- | --- | --- | --- | --- | --- |
+| 100k | baseline | 1.7 µs | 13 µs | 8–20 µs | |
+| | aggregated | 3.7 µs | 27 µs | 20 µs–1.6 ms | 0.0% |
+| | raw | 12 µs | 27 µs | 20–28 µs | 25.6% |
+| 500k | baseline | 0.8 µs | 164 µs | 15–278 µs | |
+| | aggregated | 1.7 µs | 32 µs | 30–44 µs | 0.2% |
+| | raw | 9.5 µs | 84 µs | 38–292 µs | 33.0% |
+| 1M | baseline | 0.7 µs | 4.0 ms | 37 µs–7.6 ms | |
+| | aggregated | 1.0 µs | 5.1 ms | 0.5–10 ms | 0.2% |
+| | raw | 3.1 µs | 6.8 ms | 2.9–66 ms | 25.6% |
+
+Service p99 stays near a microsecond while response p99 reaches milliseconds at 1M reads/s, even with no tracing. Something stalls the workload (nothing here says what), and the calls queued behind each stall are what the old measurement left out.
+
+The response ranges overlap so much that they can't rank the modes. Baseline at 500k came out worse than aggregated, which can't be the tracer helping. All this table supports is that service time hides stalls in this VM.
+
+Raw mode's agent CPU, last measured with the old decoder, was 25.6% at 1M reads/s versus 29.9% before. At 100k it went up, from 9.0% to 25.6%. Calls are now evenly spaced rather than bursty, so the consumer likely wakes for nearly every event instead of draining a batch, but that hasn't been checked. Raw mode also dropped events at 1M in these runs (35,683 in the median run, none before).
+
+Unthrottled, the medians were 8.03M reads/s baseline, 4.54M aggregated and 2.77M raw, with 68% agent CPU and 172,298 drops in the median raw run. Those aren't comparable with the 10.0M, 5.81M and 4.18M above. The baseline has no BPF at all and still fell, and the Mac's load average was about 28 when these ran.
+
+### Cost of the new hooks
+
+Under that same load the previous build and the current one were alternated three times at the unthrottled rate ([`probe_cost_hooks_ab.csv`](../benchmarks/results/probe_cost_hooks_ab.csv)). Aggregated cost was 130–134 ns per run before response, off-CPU and retransmit tracking, and 85–146 ns with them. There's no sign of a slowdown on this read-only workload, and the spread is too wide to rule out a small one. The workload doesn't exercise `write`, TCP or sleep paths.
+
 ## Ring buffer size
 
 Raw mode at fixed rates with ring sizes from 16 KiB to 16 MiB ([`ringsweep.csv`](../benchmarks/results/ringsweep.csv)). One 5-second run per cell. An event is 56 bytes plus an 8-byte header.

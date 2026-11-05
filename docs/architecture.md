@@ -31,6 +31,12 @@ The tracepoint context structs are written by hand from `/sys/kernel/tracing/eve
 
 **Read wait.** A non-blocking read with no data returns EAGAIN right away, and the program waits in `epoll_wait` (or `poll`, or Go's netpoller) before reading again. Neither read is slow, so the `read` op can't see the wait. The `read` enter probe also saves the fd, and at exit a read that returned EAGAIN stores its timestamp in `read_wait` keyed by `(tgid, fd)`, unless an earlier one is already there. The next read on that fd that returns anything else removes the entry and delivers the gap as the `readwait` pseudo-op, with the second read's return value. The key is the process and fd, not the thread, because the retry often runs on a different thread. `sys_enter_close` deletes the entry so a reused fd number doesn't inherit it.
 
+**Response.** A Go client parks its reader on a connection before sending the next request, so the read wait covers the idle gap too. To separate them, `read_wait` also stores the time of the last successful `write` on that fd while a read is pending. When the read finishes, the gap since that write is delivered as the `response` pseudo-op. Writes only touch fds that already have an entry, which keeps file writes and logging out of the map at the cost of one lookup per write.
+
+**TCP retransmits.** The `tcp_retransmit_skb` tracepoint mostly fires in softirq or from a timer, where the current task is unrelated to the socket. So `sock_owner` maps `struct sock *` to a TGID, filled from process context: `fentry/tcp_sendmsg`, and `inet_sock_set_state` entering SYN_SENT, which covers a retransmitted SYN before any data was sent. Moving to CLOSE deletes the entry so a recycled `struct sock` doesn't inherit the owner. The retransmit is recorded as a count under `(owner, OP_RETRANS)`, without an event, since there's no duration and no thread to report.
+
+**Off-CPU stacks.** For one process, chosen by `config.offcpu_tgid`, `sched_switch` takes the kernel stack of each thread going to sleep (`bpf_get_stackid`, while it is still current) and stores it with a timestamp in `sleeping`. `sched_wakeup` closes the entry and adds the time to `offcpu`, keyed by stack id. It's limited to one process because a stack walk on every sleep isn't free. Time ends at wakeup rather than when the thread gets a CPU, since the rest is already run-queue delay. `offcpu` is updated from whichever CPU runs the wakeup, so unlike `stats` it uses atomic adds.
+
 **Aggregation.** `stats` is a per-CPU hash keyed by `(tgid, op)` holding a count, error count, byte count, total time and a 40-slot log2 histogram of durations. Being per-CPU means the hot path does plain increments with no atomics; the cost is memory (each value is 352 bytes per CPU) and a userspace sum across CPUs on every read.
 
 EAGAIN and EINPROGRESS are not counted as errors. Non-blocking I/O returns them as a normal step, and Go's runtime does it for every socket and pipe read, so counting them made healthy Go processes look like they were failing.
@@ -51,6 +57,7 @@ EAGAIN and EINPROGRESS are not counted as errors. Non-blocking I/O returns them 
 
 - `top` prints per-process rates and p99 from each interval's delta.
 - `trace` sets the target, reads the ring buffer for a fixed duration, and prints exact percentiles per op plus the longest syscalls. Events can also be written as JSON lines.
+- `offcpu` opens its own probe, sets the off-CPU target, waits, and prints the stacks with the most time asleep, symbolized from `/proc/kallsyms`.
 - `agent` serves `/metrics` (per-op totals, no PID labels) and, with `-trigger`, starts a capture of whichever process's interval p99 for one op crossed the threshold. Captures use the same code as `trace`. There is one target slot in the kernel config, so one capture runs at a time.
 
 ## Why the two modes

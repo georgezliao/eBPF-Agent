@@ -1,6 +1,6 @@
 # TraceLens
 
-TraceLens is a Linux eBPF tool that shows, per process, how long syscalls take and how long threads wait for a CPU. It traces `read`, `write`, `openat`, `connect`, `fsync`/`fdatasync`, run-queue delay and how long non-blocking reads wait for data, keeps per-process latency histograms inside the kernel, and only streams individual calls to userspace for one process at a time, when asked or when a latency threshold trips.
+TraceLens is a Linux eBPF tool that shows, per process, how long syscalls take and how long threads wait for a CPU. It traces `read`, `write`, `openat`, `connect`, `fsync`/`fdatasync`, run-queue delay, how long non-blocking reads wait for data, and TCP retransmits. It keeps per-process latency histograms inside the kernel and only streams individual calls to userspace for one process at a time, when asked or when a latency threshold trips. For one process it can also show which kernel stacks its threads slept in.
 
 It's written in Go and C with [cilium/ebpf](https://github.com/cilium/ebpf) and `bpf2go`. The output below is from the [demo](docs/demo.md) while a bulk write was slowing its fsyncs; the `trace` part was printed by the agent's triggered capture, which runs the same code as `tracelens trace`.
 
@@ -23,22 +23,24 @@ longest syscalls:
   ...
 ```
 
-This output was captured before the `RWAIT p99` column (read wait) was added to `top`.
+This output was captured before the `RWAIT p99`, `RESP p99` and `RETRANS/s` columns were added to `top`.
 
 ## Commands
 
 ```
 tracelens top   [-interval 2s] [-n 15]
 tracelens trace -pid PID [-duration 10s] [-min 0] [-out events.jsonl]
+tracelens offcpu -pid PID [-duration 10s] [-n 5]
 tracelens agent [-listen :9090] [-interval 1s]
                 [-trigger 20ms -trigger-op fsync -capture 10s -dir /tmp]
 ```
 
 - **`top`** prints syscall rates, error rates and p99 per process every interval, sorted by syscall rate.
 - **`trace`** follows one process for a fixed time and reports exact p50/p99/max per op, the longest calls, and how many events were dropped. `-min` filters short calls in the kernel; `-out` writes every call as a JSON line.
-- **`agent`** serves Prometheus metrics at `/metrics`: per-op call, error and byte counters, latency histograms, run-queue delay and read wait histograms, and drop counters. Labels are per op only, with no PID label, so the number of series stays fixed. With `-trigger`, it captures whichever process's interval p99 for `-trigger-op` reaches the threshold, using the same code as `trace`, and writes the capture to `-dir`.
+- **`offcpu`** groups one process's sleeps by kernel stack and prints the stacks with the most time asleep. This is how to find out why a thread was waiting: `balance_dirty_pages` under a slow `write`, `ep_poll` for an idle Go runtime.
+- **`agent`** serves Prometheus metrics at `/metrics`: per-op call, error and byte counters, latency histograms, run-queue delay, read wait and response histograms, TCP retransmits, and drop counters. Labels are per op only, with no PID label, so the number of series stays fixed. With `-trigger`, it captures whichever process's interval p99 for `-trigger-op` reaches the threshold, using the same code as `trace`, and writes the capture to `-dir`.
 
-Errors exclude EAGAIN and EINPROGRESS, which non-blocking I/O returns as a normal step. Read wait (`readwait`, `RWAIT`) is the time from a `read` returning EAGAIN until the next `read` on the same fd returns; for Go sockets and pipes, which never block in `read`, it's the only place their waits show up.
+Errors exclude EAGAIN and EINPROGRESS, which non-blocking I/O returns as a normal step. Read wait (`readwait`, `RWAIT`) is the time from a `read` returning EAGAIN until the next `read` on the same fd returns; for Go sockets and pipes, which never block in `read`, it's the main place their waits show up. Response (`response`, `RESP`) is the part of that wait after the last `write` on the fd, so on a keep-alive connection the client sees the server's response time without the idle gap before the request.
 
 ## How it works
 
@@ -50,7 +52,7 @@ There's no `vmlinux.h`. Syscall tracepoint contexts are hand-written from their 
 
 ## Requirements
 
-- Linux 5.18+ with BTF (`/sys/kernel/btf/vmlinux`), run as root. `CAP_BPF` + `CAP_PERFMON` should be enough but hasn't been tried.
+- Linux 5.18+ with BTF (`/sys/kernel/btf/vmlinux`), run as root. On arm64, 6.0+ for `fentry`. `CAP_BPF` + `CAP_PERFMON` should be enough but hasn't been tried.
 - Go 1.25+ to build
 - clang and llvm-strip with the BPF target, only to regenerate the BPF objects (`make generate`). The generated `.o` and Go bindings are committed.
 
@@ -90,7 +92,7 @@ Measured in a 4-vCPU Lima VM on an M4 MacBook Air with a worst-case workload: ba
 | in-kernel aggregation (default) | 5.81M | ~0% | ≤120 ns |
 | every event to userspace (`-export-all`) | 4.18M, ~8.7M events dropped per 5 s run* | 30% of a core* | ≤234 ns |
 
-\* Measured with the original `binary.Read` decoder. After switching to offset-based decoding, unthrottled drops fell to 5-6% (about 3.8M events/s delivered); agent CPU hasn't been remeasured.
+\* Measured with the original `binary.Read` decoder. After switching to offset-based decoding, unthrottled drops fell to 5-6% (about 3.8M events/s delivered). A later [open-loop rerun](docs/benchmarks.md#open-loop-rerun) measured 26% of a core at 1M reads/s and 68% unthrottled, on a busier host and with a different load generator.
 
 For syscalls that take microseconds or more, the per-call cost is a much smaller fraction. Latency comparisons at paced rates turned out to depend on how idle the VM was, so the writeup doesn't rely on them.
 
@@ -99,7 +101,7 @@ For syscalls that take microseconds or more, the per-call cost is a much smaller
 The full list is in [docs/limitations.md](docs/limitations.md). The ones most likely to matter:
 
 - **Syscall duration isn't device latency**, and read/write bytes aren't disk bytes.
-- **Socket waits in epoll-based programs only show up as read wait**, and only for `read(2)` calls that hit EAGAIN first. `recv`, writes and programs that wait in `epoll_wait` before their first read aren't covered. On keep-alive connections, read wait includes the idle time between requests.
+- **Socket waits in epoll-based programs only show up as read wait**, and only for `read(2)` calls that hit EAGAIN first. `recv`, writes and programs that wait in `epoll_wait` before their first read aren't covered. On keep-alive connections, read wait includes the idle time between requests, and a server's `response` measures the client's pause, not its own speed.
 - **p99 in `top`, `/metrics` and the trigger is a log2 bucket upper bound**, up to 2x the true value. `trace` is exact.
 - **Triggered captures start up to one interval after the spike**, so they can miss its peak.
 - **One traced process at a time**, and PIDs are from the host PID namespace.
@@ -112,10 +114,9 @@ The full list is in [docs/limitations.md](docs/limitations.md). The ones most li
 
 None of these are started.
 
-- **Off-CPU time with stacks.** `sched_switch` already sees threads going to sleep; adding `bpf_get_stackid` would show where they sleep. That could test the guess in the learnings that `dd`'s 210 ms writes were dirty-page throttling.
-- **Network response time.** Timing from the last `write` on an fd to the next `read` that returns data might separate response time from keep-alive idle time, though it assumes request/response traffic.
-- **TCP retransmits.** Recording each socket's owner in process context, keyed by `struct sock *`, would give the softirq path a process to attribute retransmits to.
-- **Scheduled start times in `cmd/loadgen`.** It times each call, not the delay from when the call should have started, so a stall between slots goes uncounted (coordinated omission).
+- **User stacks in `offcpu`.** It only captures kernel stacks, which say what a thread slept in but not which code path called it. Go has frame pointers, so `BPF_F_USER_STACK` should work, but the addresses need symbolizing against the binary.
+- **Writes blocked on a full socket buffer.** `write` returning EAGAIN could be timed the same way as read wait.
+- **`recv`, `recvfrom` and `recvmsg`.** Read wait only sees `read(2)`, so programs that use these don't get it.
 - **Per-CPU maps at high core counts.** Each stats value is 352 bytes per CPU, so a shared hash with atomics may become the better trade at some core count. Finding where needs a machine with many cores.
 
 ## Further reading

@@ -1,0 +1,7 @@
+build,mode,reads,bpf_runs,bpf_seconds,ns_per_run,bpf_ns_per_read
+before_response_offcpu_retrans,aggregated,13004000,26038701,3.4958,134,269
+all_hooks,aggregated,11864000,23756977,3.4605,146,292
+before_response_offcpu_retrans,aggregated,12929000,25890222,3.3718,130,261
+all_hooks,aggregated,12804000,25637240,3.5325,138,276
+before_response_offcpu_retrans,aggregated,13121000,26277109,3.5027,133,267
+all_hooks,aggregated,18784000,37610460,3.2096,85,171

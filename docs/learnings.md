@@ -18,6 +18,8 @@ Later I came back to this. Off-CPU time and `epoll_wait` both have the same prob
 
 Then I tried it (in the same Lima VM, with a throwaway program I didn't keep) on a Go HTTP client calling a server with a 50 ms handler, with the client sleeping 100 ms between requests. Both processes reported a read wait of about 155 ms, the full cycle and not the 50 ms I expected. I think it's because Go's HTTP server and client both keep a read pending on a keep-alive connection, so the wait includes the idle gap between requests. With keep-alive turned off, the client showed 51 ms and the server under 1 ms, which matches. So read wait is the response time only when nothing reads the connection while it's idle, and that's not the case for most Go HTTP code. It's still more than zero information, but it's not the clean "your backend got slow" number I was hoping for.
 
+So I added the obvious next thing: remember the last write on that fd during the wait, and also report the time since that write. On the same setup the client now shows 52 ms next to its 155 ms read wait, which is the handler plus a bit. The server shows 102 ms, and for a second that looked wrong until I realized it's the client's 100 ms sleep. From the server's side, "I wrote something and then waited for a reply" describes the gap between requests. The number is right, it's just answering a question nobody asked. I don't see a way to tell the two sides apart from syscalls alone, so the docs say to read it on the side that's waiting.
+
 Also, fds get reused. If a program gets EAGAIN on fd 7, closes it, and opens something new that lands on 7, the first read on the new file would report a wait that started on the old one. So `close` is traced now too, just to delete the entry. My test for this first failed with `EINVAL` from `dup3`: I was moving the new pipe onto the old fd number, but the kernel always hands out the lowest free number, so it was already there.
 
 ## Tracing yourself never goes quiet
@@ -61,11 +63,29 @@ At 500k and 1M events/s, going from 16 KiB to 256 KiB took drops from 8.5% and 1
 
 Later I went back and benchmarked the consumer's two suspects separately. `binary.Read` took about 220 ns and two allocations per event, and the mutex-guarded update took 6 ns, so it was basically all decoding. Reading the fields by offset got decode down to 7.5 ns. After that, the consumer kept up with about 3.8M events/s instead of 2.2M, and unthrottled drops went from 40-48% to about 6%. It's a bit funny that half the "cost of exporting events to userspace" in my first benchmark was just a slow decoding function.
 
+## My load generator was hiding stalls, and then I broke it
+
+`loadgen` turned out to have the problem Gil Tene calls coordinated omission. It timed each call from when the call started, so if the thread stalled for 5 ms, that showed up as one slow sample and the thousands of calls that should have run during those 5 ms just never counted. I changed it to a fixed schedule, where a call's response time is measured from when it was due.
+
+The difference is kind of ridiculous. At 1M reads/s with no tracing at all, service p99 was 0.7 µs and response p99 was 4 ms. I don't know what the stalls are, probably the VM or my laptop, but the old number was never going to show them. I also can't use this to rank the tracing modes, since the ranges overlap and at 500k the untraced baseline came out worse than aggregated.
+
+Then the unthrottled baseline came back as 5.3M reads/s instead of 10M, and for a moment that looked like a finding. It was my bug: the new loop read the clock on every call, and a clock read costs about as much as reading a byte from `/dev/zero`. After fixing that it was 8M, still not 10M, and aggregated cost looked like it had doubled. Three features had just gone in, so they were the obvious suspect. But the old build measured the same under the same conditions, and my Mac's load average was 28. After the 248 ns thing I'm glad I checked before writing that one down.
+
 ## Triggered capture sees the aftermath
 
 In the demo, the worst seconds were when the service only managed 30 requests with a p99 of 361 ms. The agent checks once per second, so it only noticed after that interval ended, and by the time the 5-second capture started the worst writeback was over. The capture's max was 80 ms.
 
 The always-on histogram did catch the spike, since that's what fired the trigger. So I think the two modes really are complementary: the cheap histogram tells you it happened and roughly how bad, and the capture tells you which calls in what order, as long as the problem keeps going. In an earlier run the trigger fired on writeback left over from the *previous* run, before I'd even injected anything, and the one-minute cooldown then skipped the real spike. The demo does a `sync` first now.
+
+## What `dd` was actually waiting for
+
+Early on, `dd` writing a big file had a couple of writes take about 210 ms while p50 was 21 µs, and I wrote that I'd bet it was dirty-page throttling. So once `tracelens offcpu` existed I actually checked, running `trace` and `offcpu` on the same `dd` three times.
+
+Mostly I was right, but not completely. In two runs the longest writes were 55.7 and 54.5 ms and the longest sleeps were 54.6 and 52.4 ms, and those sleeps were in `balance_dirty_pages`, so the slowest writes basically are that one sleep. In the other run the top stack was something else: `rwsem_down_write_slowpath` under `ext4_da_map_blocks`, waiting on an ext4 lock for up to 47 ms. I guess that's contention with writeback, but all I actually know is the stack. And I never got 210 ms again, the worst write was about 56 ms, so I still can't say what those original writes were. Also, `dd` was asleep for only 0.2–0.6 s of each 3.3 s run, so this is a mostly on-CPU program with a few big stalls, which `top`'s p99 wouldn't have told me.
+
+## Retransmits came back once I stopped asking softirq who it was
+
+I'd dropped TCP retransmits because the tracepoint mostly fires in softirq, where "current" is whoever happened to be running. The fix is pretty simple in hindsight: don't ask at retransmit time. Remember which process owns each `struct sock *` when it calls `tcp_sendmsg` or `connect`, then look it up later. The test uses `netem` to drop 20% of packets on loopback while a child process sends 4 MiB, and the runs I looked at gave 20–30 retransmits on the child and none anywhere else.
 
 ## Smaller things
 
@@ -74,10 +94,7 @@ The always-on histogram did catch the spike, since that's what fired the trigger
 - bpf2go got confused when a map and a struct were both named `config`. It also won't generate a Go type for a struct that's only used in `sizeof()` for a ring buffer reservation, so there's a dummy `const struct event *unused_event` to keep it in BTF.
 - Replacing cilium's example `common.h` (a mini `vmlinux.h` with XDP structs I didn't use) with a 30-line header produced a byte-identical `.o`. That's how I found out bpf2go output is deterministic, which made `make check-generated` possible.
 - Unit tests run on macOS, and one caught `unix.EAGAIN` being 35 there instead of 11. The return values come from a Linux kernel, so the Linux values are hardcoded now.
-- `dd` writing a big file had a couple of writes take about 210 ms while p50 was 21 µs. I'd bet that's dirty-page throttling, but I'd need writeback tracepoints or stacks to know.
-- I dropped TCP retransmits. The tracepoint mostly fires in softirq context, so whatever process happens to be "current" isn't the socket's owner.
 
 ## Open questions
 
-- Is there a cheap way to separate idle keep-alive time from real response time in read wait? Maybe timing from the last `write` on the same fd instead of from the EAGAIN, but that assumes request/response.
 - Per-CPU stats values are 352 bytes per CPU. On a 64-core machine the map would be around 180 MB. At some core count a shared hash with atomics is probably the better trade, but I haven't measured where.
