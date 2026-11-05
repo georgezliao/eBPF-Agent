@@ -83,6 +83,9 @@ func runAgent(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if op == probe.OpRetrans {
+		return errors.New("agent: retrans is a count with no latency, so it can't trigger a capture")
+	}
 
 	p, err := probe.Open(uint32(*ring))
 	if err != nil {

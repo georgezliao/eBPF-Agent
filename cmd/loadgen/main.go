@@ -93,13 +93,26 @@ func worker(deadline time.Time, rate int) (uint64, samples) {
 // start + n/rate whatever happened to earlier calls, so after a stall the calls it delayed
 // run back to back and their response time includes the wait. Timing only the call itself
 // would record one slow sample for the stall and hide the rest (coordinated omission).
-// Without a rate there is no schedule, so response time equals service time.
 func run(deadline time.Time, rate int, read func()) (uint64, samples) {
+	if rate == 0 {
+		return runUnthrottled(deadline, read)
+	}
 	var (
 		n uint64
 		s samples
 	)
-	call := func(now, due time.Time) {
+	start := time.Now()
+	for {
+		now := time.Now()
+		if !now.Before(deadline) {
+			return n, s
+		}
+		due := start.Add(time.Duration(float64(n) * float64(time.Second) / float64(rate)))
+		// Spin: time.Sleep's wakeup delay would count as response time, and a sleeping
+		// thread lets the vCPU go idle, which changes syscall latency.
+		for now.Before(due) {
+			now = time.Now()
+		}
 		if n%sampleEvery == 0 {
 			read()
 			end := time.Now()
@@ -110,29 +123,29 @@ func run(deadline time.Time, rate int, read func()) (uint64, samples) {
 		}
 		n++
 	}
-	start := time.Now()
-	for {
-		now := time.Now()
-		if !now.Before(deadline) {
-			return n, s
-		}
-		if rate == 0 {
-			// Check the clock once per batch: per call it costs as much as the read
-			// and halves the unthrottled rate.
-			for range 1000 {
-				if n%sampleEvery == 0 {
-					now = time.Now()
-				}
-				call(now, now)
+}
+
+// runUnthrottled has no schedule, so response time equals service time. The clock is only
+// read for samples and once per batch: on every call it costs as much as the read and
+// halves the rate.
+func runUnthrottled(deadline time.Time, read func()) (uint64, samples) {
+	var (
+		n uint64
+		s samples
+	)
+	for time.Now().Before(deadline) {
+		for range 1024 {
+			if n%sampleEvery == 0 {
+				start := time.Now()
+				read()
+				d := time.Since(start)
+				s.service = append(s.service, d)
+				s.response = append(s.response, d)
+			} else {
+				read()
 			}
-			continue
+			n++
 		}
-		due := start.Add(time.Duration(float64(n) * float64(time.Second) / float64(rate)))
-		// Spin: time.Sleep's wakeup delay would count as response time, and a sleeping
-		// thread lets the vCPU go idle, which changes syscall latency.
-		for now.Before(due) {
-			now = time.Now()
-		}
-		call(now, due)
 	}
+	return n, s
 }

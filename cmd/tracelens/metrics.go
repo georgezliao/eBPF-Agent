@@ -109,7 +109,7 @@ func writeMetrics(w io.Writer, totals *[probe.NumOps]probe.Stats, lostEvents, lo
 	fmt.Fprintln(w, "# HELP tracelens_response_seconds Time from the last write on an fd with a read pending until a read on it returned data.")
 	fmt.Fprintln(w, "# TYPE tracelens_response_seconds histogram")
 	writeHist(w, "tracelens_response_seconds", probe.OpResponse, &totals[probe.OpResponse])
-	fmt.Fprintln(w, "# HELP tracelens_tcp_retransmits_total TCP segments retransmitted.")
+	fmt.Fprintln(w, "# HELP tracelens_tcp_retransmits_total TCP retransmit events.")
 	fmt.Fprintln(w, "# TYPE tracelens_tcp_retransmits_total counter")
 	fmt.Fprintf(w, "tracelens_tcp_retransmits_total %d\n", totals[probe.OpRetrans].Count)
 	fmt.Fprintln(w, "# HELP tracelens_events_dropped_total Trace events lost because the ring buffer was full.")

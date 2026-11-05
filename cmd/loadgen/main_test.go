@@ -35,7 +35,8 @@ func TestStallCountsAgainstEveryDelayedCall(t *testing.T) {
 	if n := over(s.response); n < 8 {
 		t.Errorf("response samples over 25ms = %d, want >= 8", n)
 	}
-	if max := slices.Max(s.response); max < stall {
-		t.Errorf("worst response = %v, want >= %v", max, stall)
+	// The stall hits between samples, so the worst sample can be up to 16 calls late.
+	if max := slices.Max(s.response); max < stall*9/10 {
+		t.Errorf("worst response = %v, want about %v", max, stall)
 	}
 }
