@@ -59,6 +59,20 @@ func symbol(syms []ksym, addr uint64) string {
 	return syms[i].name
 }
 
+// sleepFrames symbolizes a stack and drops everything up to and including __schedule: the
+// BPF program and the tracepoint plumbing are the tracer, and identical on every stack.
+func sleepFrames(frames []uint64, syms []ksym) []string {
+	names := make([]string, len(frames))
+	start := 0
+	for i, pc := range frames {
+		names[i] = symbol(syms, pc)
+		if names[i] == "__schedule" && start == 0 {
+			start = i + 1
+		}
+	}
+	return names[start:]
+}
+
 func printOffCPU(w io.Writer, stacks []probe.OffCPUStack, syms []ksym, limit int, elapsed time.Duration) {
 	slices.SortFunc(stacks, func(a, b probe.OffCPUStack) int { return cmp.Compare(b.Total, a.Total) })
 	var total time.Duration
@@ -75,12 +89,13 @@ func printOffCPU(w io.Writer, stacks []probe.OffCPUStack, syms []ksym, limit int
 		if len(s.Frames) == 0 {
 			fmt.Fprintln(w, "  [stack not captured]")
 		}
-		for j, pc := range s.Frames {
+		names := sleepFrames(s.Frames, syms)
+		for j, name := range names {
 			if j == maxFrames {
-				fmt.Fprintf(w, "  ... %d more\n", len(s.Frames)-j)
+				fmt.Fprintf(w, "  ... %d more\n", len(names)-j)
 				break
 			}
-			fmt.Fprintf(w, "  %s\n", symbol(syms, pc))
+			fmt.Fprintf(w, "  %s\n", name)
 		}
 	}
 }
