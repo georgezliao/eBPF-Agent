@@ -14,6 +14,7 @@ const usage = `usage: tracelens <command> [flags]
 commands:
   top     per-process syscall rates and p99 latency, refreshed every interval
   trace   record every syscall of one process for a while and summarize it
+  offcpu  show which kernel stacks one process's threads slept in
   agent   serve Prometheus metrics; optionally capture processes whose p99 spikes
 `
 
@@ -31,6 +32,8 @@ func main() {
 		err = runTop(ctx, os.Args[2:])
 	case "trace":
 		err = runTrace(ctx, os.Args[2:])
+	case "offcpu":
+		err = runOffCPU(ctx, os.Args[2:])
 	case "agent":
 		err = runAgent(ctx, os.Args[2:])
 	default:

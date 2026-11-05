@@ -72,16 +72,17 @@ func comm(pid uint32) string {
 
 func printTop(w io.Writer, rows []procRow, limit int) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
-	fmt.Fprintln(tw, "PID\tCOMM\tREAD/s\tWRITE/s\tOPEN/s\tCONN/s\tFSYNC/s\tERR/s\tREAD p99\tWRITE p99\tFSYNC p99\tRWAIT p99\tRUNQ p99\t")
+	fmt.Fprintln(tw, "PID\tCOMM\tREAD/s\tWRITE/s\tOPEN/s\tCONN/s\tFSYNC/s\tERR/s\tREAD p99\tWRITE p99\tFSYNC p99\tRWAIT p99\tRESP p99\tRUNQ p99\tRETRANS/s\t")
 	for i, r := range rows {
 		if i == limit {
 			break
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\t%.1f\t%s\t%s\t%s\t%s\t%s\t\n",
+		fmt.Fprintf(tw, "%d\t%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\t%.1f\t%s\t%s\t%s\t%s\t%s\t%s\t%.1f\t\n",
 			r.tgid, comm(r.tgid), r.perSec[probe.OpRead], r.perSec[probe.OpWrite],
 			r.perSec[probe.OpOpenat], r.perSec[probe.OpConnect], r.perSec[probe.OpFsync], r.errSec,
 			fmtDur(r.p99[probe.OpRead]), fmtDur(r.p99[probe.OpWrite]), fmtDur(r.p99[probe.OpFsync]),
-			fmtDur(r.p99[probe.OpReadWait]), fmtDur(r.p99[probe.OpRunq]))
+			fmtDur(r.p99[probe.OpReadWait]), fmtDur(r.p99[probe.OpResponse]),
+			fmtDur(r.p99[probe.OpRunq]), r.perSec[probe.OpRetrans])
 	}
 	tw.Flush()
 }

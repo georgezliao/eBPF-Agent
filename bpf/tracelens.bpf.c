@@ -2,22 +2,28 @@
 //
 // Syscall latency and run-queue delay per process. Each syscall entry stores a timestamp
 // keyed by TID; the matching exit computes the duration and folds it into per-CPU stats
-// keyed by (tgid, op). Two pseudo-ops go into the same map: OP_RUNQ, run-queue delay
-// (wakeup to running), and OP_READ_WAIT, the time from a read returning EAGAIN until a
-// read on the same fd returns something else. Detailed per-call events only leave the
-// kernel for the one TGID that userspace selects in `config`.
+// keyed by (tgid, op). Pseudo-ops go into the same map: OP_RUNQ is run-queue delay (wakeup
+// to running), OP_READ_WAIT the time from a read returning EAGAIN until a read on the same
+// fd returns something else, OP_RESPONSE the part of that wait after the last write on the
+// fd, and OP_RETRANS counts TCP retransmits. Detailed per-call events only leave the kernel
+// for the one TGID that userspace selects in `config`. Off-CPU time by kernel stack is
+// collected for one TGID only, since taking a stack on every sleep isn't free.
 
 #include "headers/types.h"
 
 #define HIST_SLOTS 40 // log2(ns) buckets; slot 39 starts at ~9 minutes
 #define EAGAIN 11
 #define EINPROGRESS 115
+#define TCP_SYN_SENT 2
+#define TCP_CLOSE 7
+#define MAX_STACK_DEPTH 127 // the kernel's default sysctl_perf_event_max_stack
 
-enum op { OP_READ, OP_WRITE, OP_OPENAT, OP_CONNECT, OP_FSYNC, OP_RUNQ, OP_READ_WAIT, NUM_OPS };
+enum op { OP_READ, OP_WRITE, OP_OPENAT, OP_CONNECT, OP_FSYNC, OP_RUNQ, OP_READ_WAIT, OP_RESPONSE,
+       OP_RETRANS, NUM_OPS };
 
 // Context layouts from /sys/kernel/tracing/events/syscalls/sys_{enter,exit}_*/format.
 // Every syscall tracepoint has the same 8-byte common header and int syscall number.
-// read and close both take the fd as their first argument.
+// read, write and close all take the fd as their first argument.
 struct sys_enter_fd_ctx {
 	__u64 common;
 	__s32 nr;
@@ -44,6 +50,7 @@ struct trace_config {
 	// in-kernel aggregation, so userspace has to do it instead.
 	__u32 export_all;
 	__u64 min_duration_ns;  // detailed events shorter than this are dropped in-kernel
+	__u32 offcpu_tgid;      // 0 = no off-CPU stacks
 };
 
 struct stats_key {
@@ -80,7 +87,7 @@ struct {
 
 struct inflight {
 	__u64 ts;
-	__u64 fd; // set by read's enter probe, 0 for other syscalls
+	__u64 fd; // set for read and write, 0 for other syscalls
 };
 
 // In-flight syscalls by TID. LRU so entries left by threads that died mid-syscall get
@@ -97,6 +104,11 @@ struct fd_key {
 	__u32 fd;
 };
 
+struct pending_read {
+	__u64 since;      // first EAGAIN
+	__u64 last_write; // last write on the fd since then, 0 if none
+};
+
 // First EAGAIN read per (tgid, fd) that hasn't been followed by a completed read yet.
 // Keyed by process and fd rather than thread, because Go (and any epoll loop with a
 // thread pool) may retry the read from a different thread. close() deletes the entry so
@@ -105,7 +117,7 @@ struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__uint(max_entries, 16384);
 	__type(key, struct fd_key);
-	__type(value, __u64);
+	__type(value, struct pending_read);
 } read_wait SEC(".maps");
 
 // Runnable-since timestamps by TID, for run-queue delay.
@@ -127,6 +139,51 @@ struct {
 	__type(key, struct stats_key);
 	__type(value, struct op_stats);
 } stats SEC(".maps");
+
+struct sleep_start {
+	__u64 ts;
+	__s64 stack; // id in `stacks`, negative if the stack couldn't be stored
+};
+
+// Threads of the off-CPU target that are asleep, by TID.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, __u32);
+	__type(value, struct sleep_start);
+} sleeping SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_STACK_TRACE);
+	__uint(max_entries, 4096);
+	__type(key, __u32);
+	__type(value, __u64[MAX_STACK_DEPTH]);
+} stacks SEC(".maps");
+
+struct offcpu_stat {
+	__u64 count;
+	__u64 total_ns;
+	__u64 max_ns;
+};
+
+// Off-CPU time per kernel stack. Updated from whichever CPU runs the wakeup, so unlike
+// `stats` it needs atomic adds.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __s64);
+	__type(value, struct offcpu_stat);
+} offcpu SEC(".maps");
+
+// Which process owns a TCP socket, by struct sock pointer. Retransmits mostly fire in
+// softirq, where the current task is unrelated, so the owner is recorded earlier from
+// process context.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 65536);
+	__type(key, __u64);
+	__type(value, __u32);
+} sock_owner SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -247,17 +304,32 @@ static __always_inline void track_read_wait(__u32 tgid, __u32 tid, __u32 fd, __u
 	struct fd_key key = { .tgid = tgid, .fd = fd };
 	if (ret == -EAGAIN) {
 		// NOEXIST keeps the first attempt when the reader retries more than once.
-		bpf_map_update_elem(&read_wait, &key, &now, BPF_NOEXIST);
+		struct pending_read pending = { .since = now };
+		bpf_map_update_elem(&read_wait, &key, &pending, BPF_NOEXIST);
 		return;
 	}
 	// Lookup and delete aren't atomic: two threads finishing reads on the same fd at
 	// once can both report the wait. Rare, and not worth a lock in this path.
-	__u64 *since = bpf_map_lookup_elem(&read_wait, &key);
-	if (!since)
+	struct pending_read *p = bpf_map_lookup_elem(&read_wait, &key);
+	if (!p)
 		return;
-	__u64 dur = now - *since;
+	__u64 since = p->since, last_write = p->last_write;
 	bpf_map_delete_elem(&read_wait, &key);
-	deliver(tgid, tid, OP_READ_WAIT, now, dur, ret, 0);
+	deliver(tgid, tid, OP_READ_WAIT, now, now - since, ret, 0);
+	if (last_write && ret > 0)
+		deliver(tgid, tid, OP_RESPONSE, now, now - last_write, ret, 0);
+}
+
+// note_write stamps a successful write on an fd that has a read pending. Only those fds:
+// a pending read is how a request/response connection looks in Go, where the reader
+// parks on the connection before the next request goes out, and it keeps file writes
+// and logging out of the map.
+static __always_inline void note_write(__u32 tgid, __u32 fd, __u64 now)
+{
+	struct fd_key key = { .tgid = tgid, .fd = fd };
+	struct pending_read *p = bpf_map_lookup_elem(&read_wait, &key);
+	if (p)
+		p->last_write = now;
 }
 
 static __always_inline int on_exit(__u32 op, __s64 ret)
@@ -276,6 +348,8 @@ static __always_inline int on_exit(__u32 op, __s64 ret)
 	deliver(tgid, tid, op, now, dur, ret, 0);
 	if (op == OP_READ)
 		track_read_wait(tgid, tid, fd, now, ret);
+	else if (op == OP_WRITE && ret > 0)
+		note_write(tgid, fd, now);
 	return 0;
 }
 
@@ -285,10 +359,14 @@ static __always_inline int on_exit(__u32 op, __s64 ret)
 	SEC("tracepoint/syscalls/sys_exit_" #name)                       \
 	int exit_##name(struct sys_exit_ctx *ctx) { return on_exit(op, ctx->ret); }
 
-SEC("tracepoint/syscalls/sys_enter_read")
-int enter_read(struct sys_enter_fd_ctx *ctx) { return on_enter(ctx->fd); }
-SEC("tracepoint/syscalls/sys_exit_read")
-int exit_read(struct sys_exit_ctx *ctx) { return on_exit(OP_READ, ctx->ret); }
+#define FD_SYSCALL_PROBES(name, op)                                      \
+	SEC("tracepoint/syscalls/sys_enter_" #name)                      \
+	int enter_##name(struct sys_enter_fd_ctx *ctx) { return on_enter(ctx->fd); } \
+	SEC("tracepoint/syscalls/sys_exit_" #name)                       \
+	int exit_##name(struct sys_exit_ctx *ctx) { return on_exit(op, ctx->ret); }
+
+FD_SYSCALL_PROBES(read, OP_READ)
+FD_SYSCALL_PROBES(write, OP_WRITE)
 
 SEC("tracepoint/syscalls/sys_enter_close")
 int enter_close(struct sys_enter_fd_ctx *ctx)
@@ -298,7 +376,6 @@ int enter_close(struct sys_enter_fd_ctx *ctx)
 	return 0;
 }
 
-SYSCALL_PROBES(write, OP_WRITE)
 SYSCALL_PROBES(openat, OP_OPENAT)
 SYSCALL_PROBES(connect, OP_CONNECT)
 SYSCALL_PROBES(fsync, OP_FSYNC)
@@ -312,11 +389,53 @@ static __always_inline void mark_runnable(__u32 tid)
 	bpf_map_update_elem(&runnable, &tid, &ts, BPF_ANY);
 }
 
+static __always_inline __u32 offcpu_target(void)
+{
+	__u32 zero = 0;
+	struct trace_config *cfg = bpf_map_lookup_elem(&config, &zero);
+	return cfg ? cfg->offcpu_tgid : 0;
+}
+
+// Runs in sched_switch, where current is still the thread going to sleep, so the stack
+// is the one that led it there.
+static __always_inline void mark_sleeping(void *ctx, __u32 tid)
+{
+	struct sleep_start s = { .ts = bpf_ktime_get_ns(), .stack = bpf_get_stackid(ctx, &stacks, 0) };
+	bpf_map_update_elem(&sleeping, &tid, &s, BPF_ANY);
+}
+
+// Off-CPU time here ends at wakeup, not when the thread gets a CPU: the rest is run-queue
+// delay, which has its own op.
+static __always_inline void mark_awake(__u32 tid)
+{
+	struct sleep_start *s = bpf_map_lookup_elem(&sleeping, &tid);
+	if (!s)
+		return;
+	__u64 dur = bpf_ktime_get_ns() - s->ts;
+	__s64 stack = s->stack;
+	bpf_map_delete_elem(&sleeping, &tid);
+
+	struct offcpu_stat *st = bpf_map_lookup_elem(&offcpu, &stack);
+	if (!st) {
+		static const struct offcpu_stat zero;
+		bpf_map_update_elem(&offcpu, &stack, &zero, BPF_NOEXIST);
+		st = bpf_map_lookup_elem(&offcpu, &stack);
+		if (!st)
+			return;
+	}
+	__sync_fetch_and_add(&st->count, 1);
+	__sync_fetch_and_add(&st->total_ns, dur);
+	if (dur > st->max_ns) // racy, but only a concurrent wakeup on the same stack loses
+		st->max_ns = dur;
+}
+
 // tp_btf programs get the raw tracepoint arguments as an array of u64.
 SEC("tp_btf/sched_wakeup")
 int sched_wakeup(__u64 *ctx)
 {
 	struct task_struct *p = (void *)ctx[0];
+	if (p->tgid == offcpu_target())
+		mark_awake(p->pid);
 	mark_runnable(p->pid);
 	return 0;
 }
@@ -344,6 +463,8 @@ int sched_switch(__u64 *ctx)
 	bool preempt = ctx[0];
 	if (preempt || prev_state == 0)
 		mark_runnable(prev->pid);
+	else if (prev->tgid == offcpu_target())
+		mark_sleeping(ctx, prev->pid);
 
 	__u32 tid = next->pid;
 	__u64 *since = bpf_map_lookup_elem(&runnable, &tid);
@@ -355,6 +476,47 @@ int sched_switch(__u64 *ctx)
 
 	__u32 tgid = next->tgid;
 	deliver(tgid, tid, OP_RUNQ, now, dur, 0, next);
+	return 0;
+}
+
+static __always_inline void own_socket(__u64 sk)
+{
+	__u32 tgid = bpf_get_current_pid_tgid() >> 32;
+	__u32 *owner = bpf_map_lookup_elem(&sock_owner, &sk);
+	if (!owner || *owner != tgid) // skip the write on the common path
+		bpf_map_update_elem(&sock_owner, &sk, &tgid, BPF_ANY);
+}
+
+// tcp_sendmsg(struct sock *sk, ...), in the sender's context.
+SEC("fentry/tcp_sendmsg")
+int tcp_send(__u64 *ctx)
+{
+	own_socket(ctx[0]);
+	return 0;
+}
+
+// inet_sock_set_state(sk, oldstate, newstate). SYN_SENT comes from connect() in process
+// context, which covers a SYN retransmitted before anything was sent. CLOSE drops the
+// entry so a recycled struct sock doesn't inherit the old owner.
+SEC("tp_btf/inet_sock_set_state")
+int sock_set_state(__u64 *ctx)
+{
+	__u64 sk = ctx[0];
+	int state = (int)ctx[2];
+	if (state == TCP_SYN_SENT)
+		own_socket(sk);
+	else if (state == TCP_CLOSE)
+		bpf_map_delete_elem(&sock_owner, &sk);
+	return 0;
+}
+
+// tcp_retransmit_skb(sk, skb). Retransmits on a socket with no known owner go to tgid 0.
+SEC("tp_btf/tcp_retransmit_skb")
+int tcp_retransmit(__u64 *ctx)
+{
+	__u64 sk = ctx[0];
+	__u32 *owner = bpf_map_lookup_elem(&sock_owner, &sk);
+	record(owner ? *owner : 0, OP_RETRANS, 0, 0);
 	return 0;
 }
 

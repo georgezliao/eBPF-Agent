@@ -16,9 +16,11 @@ typedef __u32 __be32;
 typedef __u32 __wsum;
 
 enum bpf_map_type {
+	BPF_MAP_TYPE_HASH = 1,
 	BPF_MAP_TYPE_ARRAY = 2,
 	BPF_MAP_TYPE_PERCPU_HASH = 5,
 	BPF_MAP_TYPE_PERCPU_ARRAY = 6,
+	BPF_MAP_TYPE_STACK_TRACE = 7,
 	BPF_MAP_TYPE_LRU_HASH = 9,
 	BPF_MAP_TYPE_RINGBUF = 27,
 };

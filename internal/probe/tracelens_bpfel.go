@@ -37,6 +37,13 @@ type tracelensInflight struct {
 	Fd uint64
 }
 
+type tracelensOffcpuStat struct {
+	_       structs.HostLayout
+	Count   uint64
+	TotalNs uint64
+	MaxNs   uint64
+}
+
 type tracelensOpStats struct {
 	_       structs.HostLayout
 	Count   uint64
@@ -44,6 +51,18 @@ type tracelensOpStats struct {
 	Bytes   uint64
 	TotalNs uint64
 	Hist    [40]uint64
+}
+
+type tracelensPendingRead struct {
+	_         structs.HostLayout
+	Since     uint64
+	LastWrite uint64
+}
+
+type tracelensSleepStart struct {
+	_     structs.HostLayout
+	Ts    uint64
+	Stack int64
 }
 
 type tracelensStatsKey struct {
@@ -57,6 +76,8 @@ type tracelensTraceConfig struct {
 	TargetTgid    uint32
 	ExportAll     uint32
 	MinDurationNs uint64
+	OffcpuTgid    uint32
+	_             [4]byte
 }
 
 // Names of all BPF objects in the ELF.
@@ -67,8 +88,12 @@ const (
 	tracelensMapConfig          = "config"
 	tracelensMapEvents          = "events"
 	tracelensMapLost            = "lost"
+	tracelensMapOffcpu          = "offcpu"
 	tracelensMapReadWait        = "read_wait"
 	tracelensMapRunnable        = "runnable"
+	tracelensMapSleeping        = "sleeping"
+	tracelensMapSockOwner       = "sock_owner"
+	tracelensMapStacks          = "stacks"
 	tracelensMapStats           = "stats"
 	tracelensProgEnterClose     = "enter_close"
 	tracelensProgEnterConnect   = "enter_connect"
@@ -86,6 +111,9 @@ const (
 	tracelensProgSchedSwitch    = "sched_switch"
 	tracelensProgSchedWakeup    = "sched_wakeup"
 	tracelensProgSchedWakeupNew = "sched_wakeup_new"
+	tracelensProgSockSetState   = "sock_set_state"
+	tracelensProgTcpRetransmit  = "tcp_retransmit"
+	tracelensProgTcpSend        = "tcp_send"
 	tracelensVarUnusedEvent     = "unused_event"
 )
 
@@ -147,19 +175,26 @@ type tracelensProgramSpecs struct {
 	SchedSwitch    *ebpf.ProgramSpec `ebpf:"sched_switch"`
 	SchedWakeup    *ebpf.ProgramSpec `ebpf:"sched_wakeup"`
 	SchedWakeupNew *ebpf.ProgramSpec `ebpf:"sched_wakeup_new"`
+	SockSetState   *ebpf.ProgramSpec `ebpf:"sock_set_state"`
+	TcpRetransmit  *ebpf.ProgramSpec `ebpf:"tcp_retransmit"`
+	TcpSend        *ebpf.ProgramSpec `ebpf:"tcp_send"`
 }
 
 // tracelensMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type tracelensMapSpecs struct {
-	Active   *ebpf.MapSpec `ebpf:"active"`
-	Config   *ebpf.MapSpec `ebpf:"config"`
-	Events   *ebpf.MapSpec `ebpf:"events"`
-	Lost     *ebpf.MapSpec `ebpf:"lost"`
-	ReadWait *ebpf.MapSpec `ebpf:"read_wait"`
-	Runnable *ebpf.MapSpec `ebpf:"runnable"`
-	Stats    *ebpf.MapSpec `ebpf:"stats"`
+	Active    *ebpf.MapSpec `ebpf:"active"`
+	Config    *ebpf.MapSpec `ebpf:"config"`
+	Events    *ebpf.MapSpec `ebpf:"events"`
+	Lost      *ebpf.MapSpec `ebpf:"lost"`
+	Offcpu    *ebpf.MapSpec `ebpf:"offcpu"`
+	ReadWait  *ebpf.MapSpec `ebpf:"read_wait"`
+	Runnable  *ebpf.MapSpec `ebpf:"runnable"`
+	Sleeping  *ebpf.MapSpec `ebpf:"sleeping"`
+	SockOwner *ebpf.MapSpec `ebpf:"sock_owner"`
+	Stacks    *ebpf.MapSpec `ebpf:"stacks"`
+	Stats     *ebpf.MapSpec `ebpf:"stats"`
 }
 
 // tracelensVariableSpecs contains global variables before they are loaded into the kernel.
@@ -189,13 +224,17 @@ func (o *tracelensObjects) Close() error {
 //
 // It can be passed to loadTracelensObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tracelensMaps struct {
-	Active   *ebpf.Map `ebpf:"active"`
-	Config   *ebpf.Map `ebpf:"config"`
-	Events   *ebpf.Map `ebpf:"events"`
-	Lost     *ebpf.Map `ebpf:"lost"`
-	ReadWait *ebpf.Map `ebpf:"read_wait"`
-	Runnable *ebpf.Map `ebpf:"runnable"`
-	Stats    *ebpf.Map `ebpf:"stats"`
+	Active    *ebpf.Map `ebpf:"active"`
+	Config    *ebpf.Map `ebpf:"config"`
+	Events    *ebpf.Map `ebpf:"events"`
+	Lost      *ebpf.Map `ebpf:"lost"`
+	Offcpu    *ebpf.Map `ebpf:"offcpu"`
+	ReadWait  *ebpf.Map `ebpf:"read_wait"`
+	Runnable  *ebpf.Map `ebpf:"runnable"`
+	Sleeping  *ebpf.Map `ebpf:"sleeping"`
+	SockOwner *ebpf.Map `ebpf:"sock_owner"`
+	Stacks    *ebpf.Map `ebpf:"stacks"`
+	Stats     *ebpf.Map `ebpf:"stats"`
 }
 
 func (m *tracelensMaps) Close() error {
@@ -204,8 +243,12 @@ func (m *tracelensMaps) Close() error {
 		m.Config,
 		m.Events,
 		m.Lost,
+		m.Offcpu,
 		m.ReadWait,
 		m.Runnable,
+		m.Sleeping,
+		m.SockOwner,
+		m.Stacks,
 		m.Stats,
 	)
 }
@@ -237,6 +280,9 @@ type tracelensPrograms struct {
 	SchedSwitch    *ebpf.Program `ebpf:"sched_switch"`
 	SchedWakeup    *ebpf.Program `ebpf:"sched_wakeup"`
 	SchedWakeupNew *ebpf.Program `ebpf:"sched_wakeup_new"`
+	SockSetState   *ebpf.Program `ebpf:"sock_set_state"`
+	TcpRetransmit  *ebpf.Program `ebpf:"tcp_retransmit"`
+	TcpSend        *ebpf.Program `ebpf:"tcp_send"`
 }
 
 func (p *tracelensPrograms) Close() error {
@@ -257,6 +303,9 @@ func (p *tracelensPrograms) Close() error {
 		p.SchedSwitch,
 		p.SchedWakeup,
 		p.SchedWakeupNew,
+		p.SockSetState,
+		p.TcpRetransmit,
+		p.TcpSend,
 	)
 }
 

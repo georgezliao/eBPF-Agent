@@ -1,7 +1,7 @@
 // Package probe loads the TraceLens BPF programs, attaches them, and reads their maps.
 package probe
 
-//go:generate go tool bpf2go -target bpfel -type event -type stats_key -type op_stats -type trace_config tracelens ../../bpf/tracelens.bpf.c -- -I../../bpf
+//go:generate go tool bpf2go -target bpfel -type event -type stats_key -type op_stats -type trace_config -type offcpu_stat tracelens ../../bpf/tracelens.bpf.c -- -I../../bpf
 
 import (
 	"encoding/binary"
@@ -29,10 +29,12 @@ const (
 	// Ops from here on aren't syscalls.
 	OpRunq     // run-queue delay: wakeup or preemption until back on a CPU
 	OpReadWait // non-blocking read: first EAGAIN until a read on the same fd returns
+	OpResponse // the part of a read wait after the last write on the fd
+	OpRetrans  // TCP retransmit, a count with no duration
 	NumOps
 )
 
-var opNames = []string{"read", "write", "openat", "connect", "fsync", "runq", "readwait"}
+var opNames = []string{"read", "write", "openat", "connect", "fsync", "runq", "readwait", "response", "retrans"}
 
 func (o Op) String() string {
 	if int(o) < len(opNames) {
@@ -52,7 +54,7 @@ func ParseOp(name string) (Op, error) {
 }
 
 // Ops lists every op in display order, syscalls first.
-var Ops = []Op{OpRead, OpWrite, OpOpenat, OpConnect, OpFsync, OpRunq, OpReadWait}
+var Ops = []Op{OpRead, OpWrite, OpOpenat, OpConnect, OpFsync, OpRunq, OpReadWait, OpResponse, OpRetrans}
 
 // IsSyscall reports whether o times a single syscall, as opposed to a wait that
 // spans several.
@@ -71,8 +73,8 @@ type Probe struct {
 	gone  map[uint32]bool // processes ForgetExited found missing on its last call
 }
 
-// Open loads the BPF objects and attaches every program to the tracepoint named by its
-// ELF section ("tracepoint/<group>/<event>" or "tp_btf/<event>"). ringBytes sizes the
+// Open loads the BPF objects and attaches every program to the hook named by its ELF
+// section ("tracepoint/<group>/<event>", "tp_btf/<event>" or "fentry/<func>"). ringBytes sizes the
 // event ring buffer (a power-of-two multiple of the page size); 0 keeps the default.
 func Open(ringBytes uint32) (*Probe, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -103,7 +105,7 @@ func Open(ringBytes uint32) (*Probe, error) {
 }
 
 func attach(section string, prog *ebpf.Program) (link.Link, error) {
-	if strings.HasPrefix(section, "tp_btf/") {
+	if strings.HasPrefix(section, "tp_btf/") || strings.HasPrefix(section, "fentry/") {
 		return link.AttachTracing(link.TracingOptions{Program: prog})
 	}
 	group, event, ok := strings.Cut(strings.TrimPrefix(section, "tracepoint/"), "/")
@@ -160,6 +162,47 @@ func (p *Probe) SetTarget(tgid uint32, minDur time.Duration) error {
 // ring buffer and nothing is aggregated in the kernel.
 func (p *Probe) ExportAll() error {
 	return p.coll.Maps["config"].Put(uint32(0), tracelensTraceConfig{ExportAll: 1})
+}
+
+// OffCPUStack is the time threads spent asleep after one kernel stack. Frames are
+// addresses, innermost first; empty if the stack couldn't be captured.
+type OffCPUStack struct {
+	Frames []uint64
+	Count  uint64
+	Total  time.Duration
+	Max    time.Duration
+}
+
+// SetOffCPUTarget selects the process whose sleeps are collected by kernel stack.
+func (p *Probe) SetOffCPUTarget(tgid uint32) error {
+	return p.coll.Maps["config"].Put(uint32(0), tracelensTraceConfig{OffcpuTgid: tgid})
+}
+
+// OffCPU returns everything collected since the probe was opened.
+func (p *Probe) OffCPU() ([]OffCPUStack, error) {
+	var (
+		out   []OffCPUStack
+		id    int64
+		st    tracelensOffcpuStat
+		trace [127]uint64 // MAX_STACK_DEPTH
+	)
+	it := p.coll.Maps["offcpu"].Iterate()
+	for it.Next(&id, &st) {
+		s := OffCPUStack{Count: st.Count, Total: time.Duration(st.TotalNs), Max: time.Duration(st.MaxNs)}
+		if id >= 0 {
+			if err := p.coll.Maps["stacks"].Lookup(uint32(id), &trace); err != nil {
+				return nil, err
+			}
+			for _, pc := range trace {
+				if pc == 0 {
+					break
+				}
+				s.Frames = append(s.Frames, pc)
+			}
+		}
+		out = append(out, s)
+	}
+	return out, it.Err()
 }
 
 // RunStats returns the combined run count and run time of all BPF programs. The kernel
