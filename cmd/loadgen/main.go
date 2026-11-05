@@ -1,5 +1,6 @@
 // Command loadgen issues 1-byte read syscalls on /dev/zero at a fixed total rate (or as
-// fast as possible) and prints achieved throughput and per-call latency as one JSON line.
+// fast as possible) and prints achieved throughput, service time (call start to return)
+// and response time (scheduled start to return) as one JSON line.
 // It's the workload for the overhead benchmarks: each call is one traced syscall, and
 // /dev/zero makes the call itself cheap, so probe overhead is a large share of it.
 package main
@@ -26,6 +27,14 @@ type result struct {
 	OpsPerSec float64 `json:"ops_per_sec"`
 	P50Ns     int64   `json:"p50_ns"`
 	P99Ns     int64   `json:"p99_ns"`
+	RespP50Ns int64   `json:"response_p50_ns"`
+	RespP99Ns int64   `json:"response_p99_ns"`
+	RespMaxNs int64   `json:"response_max_ns"`
+}
+
+// samples holds the timings of every sampleEvery-th call.
+type samples struct {
+	service, response []time.Duration
 }
 
 func main() {
@@ -35,10 +44,10 @@ func main() {
 	flag.Parse()
 
 	var (
-		mu      sync.Mutex
-		total   uint64
-		samples []time.Duration
-		wg      sync.WaitGroup
+		mu    sync.Mutex
+		total uint64
+		all   samples
+		wg    sync.WaitGroup
 	)
 	start := time.Now()
 	deadline := start.Add(*dur)
@@ -47,26 +56,29 @@ func main() {
 			n, s := worker(deadline, *rate / *workers)
 			mu.Lock()
 			total += n
-			samples = append(samples, s...)
+			all.service = append(all.service, s.service...)
+			all.response = append(all.response, s.response...)
 			mu.Unlock()
 		})
 	}
 	wg.Wait()
 	elapsed := time.Since(start)
 
-	slices.Sort(samples)
 	r := result{Workers: *workers, TargetOps: *rate, Ops: total, OpsPerSec: float64(total) / elapsed.Seconds()}
-	if len(samples) > 0 {
-		r.P50Ns = int64(samples[len(samples)/2])
-		r.P99Ns = int64(samples[len(samples)*99/100])
+	if n := len(all.service); n > 0 {
+		slices.Sort(all.service)
+		slices.Sort(all.response)
+		r.P50Ns = int64(all.service[n/2])
+		r.P99Ns = int64(all.service[n*99/100])
+		r.RespP50Ns = int64(all.response[n/2])
+		r.RespP99Ns = int64(all.response[n*99/100])
+		r.RespMaxNs = int64(all.response[n-1])
 	}
 	json.NewEncoder(os.Stdout).Encode(r)
 }
 
-// worker reads until deadline. With a rate, it works in 1ms slots and issues the slot's
-// share of calls back to back, then sleeps to the next slot; a slot that falls behind
-// isn't made up later, so the achieved rate shows when the target is out of reach.
-func worker(deadline time.Time, rate int) (uint64, []time.Duration) {
+// worker opens /dev/zero on its own locked thread and runs the load against it.
+func worker(deadline time.Time, rate int) (uint64, samples) {
 	runtime.LockOSThread()
 	fd, err := syscall.Open("/dev/zero", syscall.O_RDONLY, 0)
 	if err != nil {
@@ -74,42 +86,42 @@ func worker(deadline time.Time, rate int) (uint64, []time.Duration) {
 	}
 	defer syscall.Close(fd)
 	buf := make([]byte, 1)
+	return run(deadline, rate, func() { syscall.Read(fd, buf) })
+}
+
+// run calls read until deadline. With a rate the load is open-loop: call n is due at
+// start + n/rate whatever happened to earlier calls, so after a stall the calls it delayed
+// run back to back and their response time includes the wait. Timing only the call itself
+// would record one slow sample for the stall and hide the rest (coordinated omission).
+// Without a rate there is no schedule, so response time equals service time.
+func run(deadline time.Time, rate int, read func()) (uint64, samples) {
 	var (
-		n       uint64
-		samples []time.Duration
+		n uint64
+		s samples
 	)
-	call := func() {
+	start := time.Now()
+	for {
+		now := time.Now()
+		if !now.Before(deadline) {
+			return n, s
+		}
+		due := now
+		if rate > 0 {
+			due = start.Add(time.Duration(float64(n) * float64(time.Second) / float64(rate)))
+			// Spin: time.Sleep's wakeup delay would count as response time, and a
+			// sleeping thread lets the vCPU go idle, which changes syscall latency.
+			for now.Before(due) {
+				now = time.Now()
+			}
+		}
 		if n%sampleEvery == 0 {
-			t := time.Now()
-			syscall.Read(fd, buf)
-			samples = append(samples, time.Since(t))
+			read()
+			end := time.Now()
+			s.service = append(s.service, end.Sub(now))
+			s.response = append(s.response, end.Sub(due))
 		} else {
-			syscall.Read(fd, buf)
+			read()
 		}
 		n++
 	}
-
-	const slot = time.Millisecond
-	perSlot := float64(rate) / float64(time.Second/slot)
-	var due float64 // calls owed, carrying the fraction between slots
-	next := time.Now()
-	for time.Now().Before(deadline) {
-		if rate == 0 {
-			for range 1000 {
-				call()
-			}
-			continue
-		}
-		due += perSlot
-		for ; due >= 1; due-- {
-			call()
-		}
-		next = next.Add(slot)
-		if d := time.Until(next); d > 0 {
-			time.Sleep(d)
-		} else {
-			next = time.Now()
-		}
-	}
-	return n, samples
 }

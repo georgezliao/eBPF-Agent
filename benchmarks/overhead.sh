@@ -25,7 +25,7 @@ metric() { curl -s "127.0.0.1:$PORT/metrics" | awk -v m="$1" '$1 == m {print $2}
 ready() { until curl -sf "127.0.0.1:$PORT/metrics" >/dev/null; do sleep 0.1; done; }
 json() { sed -E "s/.*\"$1\":([0-9.e+]+).*/\1/" <<<"$2"; }
 
-echo "mode,target_rate,rep,achieved_ops_per_sec,load_p50_ns,load_p99_ns,agent_cpu_pct,events_dropped"
+echo "mode,target_rate,rep,achieved_ops_per_sec,load_p50_ns,load_p99_ns,load_response_p99_ns,agent_cpu_pct,events_dropped"
 for rate in $RATES; do
   for rep in $(seq "$REPS"); do
     for mode in baseline aggregated raw; do
@@ -48,7 +48,7 @@ for rate in $RATES; do
         dropped=$(metric tracelens_events_dropped_total)
         kill "$agent"; wait "$agent" || true
       fi
-      echo "$mode,$rate,$rep,$(json ops_per_sec "$out"),$(json p50_ns "$out"),$(json p99_ns "$out"),$cpu,$dropped"
+      echo "$mode,$rate,$rep,$(json ops_per_sec "$out"),$(json p50_ns "$out"),$(json p99_ns "$out"),$(json response_p99_ns "$out"),$cpu,$dropped"
     done
   done
 done
