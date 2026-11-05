@@ -79,13 +79,13 @@ The always-on histogram did catch the spike, since that's what fired the trigger
 
 ## What `dd` was actually waiting for
 
-Early on, `dd` writing a big file had a couple of writes take about 210 ms while p50 was 21 µs, and I wrote that I'd bet it was dirty-page throttling. So once `tracelens offcpu` existed I actually checked, running `trace` and `offcpu` on the same `dd` three times.
+Early on, `dd` writing a big file had a couple of writes take about 210 ms while p50 was 21 µs, and I wrote that I'd bet it was dirty-page throttling. So once `tracelens offcpu` existed I actually checked, running `trace` and `offcpu` on the same `dd` three times in the Lima VM. I didn't keep the raw output, so these numbers are from reading it at the time.
 
 Mostly I was right, but not completely. In two runs the longest writes were 55.7 and 54.5 ms and the longest sleeps were 54.6 and 52.4 ms, and those sleeps were in `balance_dirty_pages`, so the slowest writes basically are that one sleep. In the other run the top stack was something else: `rwsem_down_write_slowpath` under `ext4_da_map_blocks`, waiting on an ext4 lock for up to 47 ms. I guess that's contention with writeback, but all I actually know is the stack. And I never got 210 ms again, the worst write was about 56 ms, so I still can't say what those original writes were. Also, `dd` was asleep for only 0.2–0.6 s of each 3.3 s run, so this is a mostly on-CPU program with a few big stalls, which `top`'s p99 wouldn't have told me.
 
 ## Retransmits came back once I stopped asking softirq who it was
 
-I'd dropped TCP retransmits because the tracepoint mostly fires in softirq, where "current" is whoever happened to be running. The fix is pretty simple in hindsight: don't ask at retransmit time. Remember which process owns each `struct sock *` when it calls `tcp_sendmsg` or `connect`, then look it up later. The test uses `netem` to drop 20% of packets on loopback while a child process sends 4 MiB, and the runs I looked at gave 20–30 retransmits on the child and none anywhere else.
+I'd dropped TCP retransmits because the tracepoint mostly fires in softirq, where "current" is whoever happened to be running. The fix is pretty simple in hindsight: don't ask at retransmit time. Remember which process owns each `struct sock *` when it calls `tcp_sendmsg` or `connect`, then look it up later. The test uses `netem` to drop 20% of packets on loopback while a child process sends 4 MiB, and the runs I looked at gave 20–36 retransmits on the child and none anywhere else.
 
 ## Smaller things
 

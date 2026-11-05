@@ -92,7 +92,7 @@ Measured in a 4-vCPU Lima VM on an M4 MacBook Air with a worst-case workload: ba
 | in-kernel aggregation (default) | 5.81M | ~0% | ≤120 ns |
 | every event to userspace (`-export-all`) | 4.18M, ~8.7M events dropped per 5 s run* | 30% of a core* | ≤234 ns |
 
-\* Measured with the original `binary.Read` decoder. After switching to offset-based decoding, unthrottled drops fell to 5-6% (about 3.8M events/s delivered). A later [open-loop rerun](docs/benchmarks.md#open-loop-rerun) measured 26% of a core at 1M reads/s and 68% unthrottled, on a busier host and with a different load generator.
+\* Measured with the original `binary.Read` decoder. After switching to offset-based decoding, unthrottled drops fell to 5-6% (about 3.8M events/s delivered). A later [open-loop rerun](docs/benchmarks.md#open-loop-rerun) measured 26% of a core at 1M reads/s and 68% unthrottled, on a busier host and with a different load generator. The BPF time column is from single runs on an older build; on that busier host, aggregated mode measured 171–292 ns per read.
 
 For syscalls that take microseconds or more, the per-call cost is a much smaller fraction. Latency comparisons at paced rates turned out to depend on how idle the VM was, so the writeup doesn't rely on them.
 
@@ -101,7 +101,7 @@ For syscalls that take microseconds or more, the per-call cost is a much smaller
 The full list is in [docs/limitations.md](docs/limitations.md). The ones most likely to matter:
 
 - **Syscall duration isn't device latency**, and read/write bytes aren't disk bytes.
-- **Socket waits in epoll-based programs only show up as read wait**, and only for `read(2)` calls that hit EAGAIN first. `recv`, writes and programs that wait in `epoll_wait` before their first read aren't covered. On keep-alive connections, read wait includes the idle time between requests, and a server's `response` measures the client's pause, not its own speed.
+- **Socket waits in epoll-based programs only show up as read wait and response**, and only for `read(2)` calls that hit EAGAIN first. `recv`, writes and programs that wait in `epoll_wait` before their first read aren't covered. On keep-alive connections, read wait includes the idle time between requests, and a server's `response` measures the client's pause, not its own speed.
 - **p99 in `top`, `/metrics` and the trigger is a log2 bucket upper bound**, up to 2x the true value. `trace` is exact.
 - **Triggered captures start up to one interval after the spike**, so they can miss its peak.
 - **One traced process at a time**, and PIDs are from the host PID namespace.

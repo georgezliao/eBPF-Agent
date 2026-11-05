@@ -112,6 +112,9 @@ Medians of three 5-second runs in the same Lima VM, with every hook loaded ([`ov
 | 100k | baseline | 1.7 µs | 13 µs | 8–20 µs | |
 | | aggregated | 3.7 µs | 27 µs | 20 µs–1.6 ms | 0.0% |
 | | raw | 12 µs | 27 µs | 20–28 µs | 25.6% |
+| 250k | baseline | 1.5 µs | 20 µs | 8–30 µs | |
+| | aggregated | 1.6 µs | 26 µs | 17–30 µs | 0.0% |
+| | raw | 13 µs | 51 µs | 40–75 µs | 30.3% |
 | 500k | baseline | 0.8 µs | 164 µs | 15–278 µs | |
 | | aggregated | 1.7 µs | 32 µs | 30–44 µs | 0.2% |
 | | raw | 9.5 µs | 84 µs | 38–292 µs | 33.0% |
@@ -129,7 +132,7 @@ Unthrottled, the medians were 8.03M reads/s baseline, 4.54M aggregated and 2.77M
 
 ### Cost of the new hooks
 
-Under that same load the previous build and the current one were alternated three times at the unthrottled rate ([`probe_cost_hooks_ab.csv`](../benchmarks/results/probe_cost_hooks_ab.csv)). Aggregated cost was 130–134 ns per run before response, off-CPU and retransmit tracking, and 85–146 ns with them. There's no sign of a slowdown on this read-only workload, and the spread is too wide to rule out a small one. The workload doesn't exercise `write`, TCP or sleep paths.
+Under that same load the previous build and the current one were alternated three times at the unthrottled rate ([`probe_cost_hooks_ab.csv`](../benchmarks/results/probe_cost_hooks_ab.csv)). Aggregated cost was 130–134 ns per run before response, off-CPU and retransmit tracking, and 138, 146 and 85 ns with them. The 85 ns run also did about 50% more reads, so the host probably got quieter during it. Without it the new build is a little slower, and with it faster, so three pairs on a loaded host are inconclusive. This workload doesn't exercise the `write`, TCP or sleep paths either.
 
 ## Ring buffer size
 

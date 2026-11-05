@@ -10,8 +10,8 @@ What TraceLens measures, and where those measurements stop meaning what they sou
 - **`fsync` covers both `fsync` and `fdatasync`.**
 - **Read wait** is the time from a `read` returning EAGAIN to the next `read` on the same fd returning something else. On a request/response connection where the reader only reads when it expects a reply, that's the peer's response time. But Go's HTTP server and client both keep a read pending on idle keep-alive connections, so there it also includes the gap between requests. In a one-off check in the Lima VM (a throwaway Go program, not in this repo) with a 50 ms handler and a client sleeping 100 ms between requests, both sides reported about 155 ms with keep-alive and the client reported 51 ms without it. For the same reason, `agent -trigger-op readwait` fires on idle keep-alive connections.
 - **Response** is the time from the last successful `write` on an fd until a read that was already pending returns data. It's only reported when a write happened during a read wait. A client that writes first and then hits EAGAIN only gets read wait, which is the same number in that case. It also doesn't know which side asked: in the same check, the client reported 52 ms, the server's handler time, and the server reported 102 ms, which is the client's pause between requests. Read it on the side that's waiting for a reply.
-- **Off-CPU time** runs from going to sleep until wakeup, summed over threads, so it can exceed wall time, and a Go process with idle threads will show a lot of it in `futex` and `ep_poll` even when nothing is wrong. A thread preempted while runnable isn't counted; that's run-queue delay. A sleep that started before the probe attached isn't counted, and stacks are kernel-only.
-- **TCP retransmits** are counted under the process that last sent on the socket or called `connect`. A socket that hasn't done either from a traced context, such as an accepted connection that hasn't sent yet, counts under PID 0. They appear in `top` and `/metrics`, not in `trace`.
+- **Off-CPU time** runs from going to sleep until wakeup, summed over threads, so it can exceed wall time, and a Go process with idle threads will show a lot of it in `futex` and `ep_poll` even when nothing is wrong. A thread preempted while runnable isn't counted; that's run-queue delay. A sleep counts only when it ends inside the window, so a thread blocked for the whole collection never appears, which can be the thread you care about. Stacks are kernel-only, cut at 32 frames.
+- **TCP retransmits** are counted under the process that last sent on the socket or called `connect`. A socket that hasn't done either from a traced context, such as an accepted connection that hasn't sent yet, counts under PID 0. They appear in `top` and `/metrics`, not in `trace`, and `-trigger-op` doesn't accept them. Each count is a retransmit event, which can cover several segments.
 - **Run-queue delay** is the time from wakeup (or preemption) until the thread is switched in. A `sched_wakeup` for a task that is already queued moves its timestamp forward, so waits can be slightly undercounted.
 - **p99 in `top`, the agent's trigger, and `/metrics` comes from log2 buckets.** It is the upper bound of the bucket holding the 99th-percentile sample, so it can be up to 2x the real value. `trace` reports exact durations.
 
@@ -32,7 +32,7 @@ File I/O (regular files are always blocking), `fsync` and run-queue delay show u
 
 - Only `read`, `write`, `openat`, `connect`, `fsync` and `fdatasync`. `pread64`/`pwrite64`, `readv`/`writev`, `recvmsg`/`sendmsg`, `io_uring` and `epoll_wait` are not traced. `close` is traced only to clean up read-wait state.
 - `sendfile` and other paths that don't call `tcp_sendmsg` may not register a socket's owner.
-- `trace` and triggered capture follow one process at a time, and so does `offcpu`. There is a single target slot for each in the kernel config.
+- `trace` and triggered capture follow one process at a time, and so does `offcpu`. `offcpu` opens its own probe with every program attached, so the process it's measuring also pays for the syscall hooks.
 
 ## Process identity
 
@@ -45,7 +45,7 @@ File I/O (regular files are always blocking), `fsync` and run-queue delay show u
 - `stats` holds 8192 keys, at most nine per process (one per op). Each value is 352 bytes per CPU. When it fills, new processes go unrecorded and `tracelens_stats_dropped_total` counts the misses.
 - `read_wait` holds 16384 pending (process, fd) pairs system-wide, and an idle connection with a read pending holds one until data arrives. Past that, LRU eviction drops the oldest waits without any counter.
 - `sock_owner` holds 65536 sockets, also LRU. An evicted socket's retransmits go to PID 0 until it sends again.
-- `stacks` and `offcpu` hold 4096 stacks. If a stack id can't be stored, the sleep is counted under a "stack not captured" entry.
+- `stacks` holds 8192 stacks, but a stack whose hash collides with a stored one is dropped, which starts around 100 distinct stacks. Those sleeps are counted under one "stack not captured" entry. `offcpu` holds 4096 entries.
 - The ring buffer drops events when the consumer falls behind; the count is reported by `trace`, captures and `tracelens_events_dropped_total`. [benchmarks.md](benchmarks.md) shows where that starts.
 
 ## Kernel requirements
