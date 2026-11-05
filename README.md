@@ -108,6 +108,37 @@ The full list is in [docs/limitations.md](docs/limitations.md). The ones most li
 
 [docs/learnings.md](docs/learnings.md) is a less formal write-up of what turned up while building this: Go's netpoller hiding socket latency, tracing yourself, the bugs code review caught, and why the latency benchmarks had to be thrown out.
 
+## Possible next steps
+
+None of these are started.
+
+- **Off-CPU time with stacks.** `sched_switch` already sees threads going to sleep; adding `bpf_get_stackid` would show where they sleep. That could test the guess in the learnings that `dd`'s 210 ms writes were dirty-page throttling.
+- **Network response time.** Timing from the last `write` on an fd to the next `read` that returns data might separate response time from keep-alive idle time, though it assumes request/response traffic.
+- **TCP retransmits.** Recording each socket's owner in process context, keyed by `struct sock *`, would give the softirq path a process to attribute retransmits to.
+- **Scheduled start times in `cmd/loadgen`.** It times each call, not the delay from when the call should have started, so a stall between slots goes uncounted (coordinated omission).
+- **Per-CPU maps at high core counts.** Each stats value is 352 bytes per CPU, so a shared hash with atomics may become the better trade at some core count. Finding where needs a machine with many cores.
+
+## Further reading
+
+Concepts:
+
+- [Off-CPU Analysis](https://brendangregg.com/offcpuanalysis.html), Brendan Gregg
+- [How Not to Measure Latency](https://www.youtube.com/watch?v=0b3sR32m0nU), Gil Tene (talk, covers coordinated omission)
+
+Talks on eBPF:
+
+- [BPF Performance Analysis at Netflix](https://www.youtube.com/watch?v=16slh29iN1g), Brendan Gregg
+- [BPF Internals](https://www.youtube.com/watch?v=_5Z2AU7QTH4), Brendan Gregg
+- [A Beginner's Guide to eBPF Programming for Networking](https://www.youtube.com/watch?v=0p987hCplbk), Liz Rice
+
+Failures worth examining:
+
+- [The story of one latency spike](https://blog.cloudflare.com/the-story-of-one-latency-spike/) (Cloudflare): slow responses traced into kernel packet processing
+- [SYN packet handling in the wild](https://blog.cloudflare.com/syn-packet-handling-in-the-wild/) (Cloudflare): how listen queues behave under load
+- [Fsync Errors](https://wiki.postgresql.org/wiki/Fsync_Errors) (PostgreSQL wiki): the 2018 "fsyncgate" reliability issues
+- [The Register on CrowdStrike and Red Hat](https://www.theregister.com/2024/09/26/grafana_labs_interview/): an eBPF sensor hitting a Linux kernel bug and panicking machines
+- [Who Will Observe the Observability?](https://blog.zmalik.dev/p/who-will-observe-the-observability): eBPF performance at scale
+
 ## Layout
 
 ```
