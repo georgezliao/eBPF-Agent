@@ -99,21 +99,7 @@ func run(deadline time.Time, rate int, read func()) (uint64, samples) {
 		n uint64
 		s samples
 	)
-	start := time.Now()
-	for {
-		now := time.Now()
-		if !now.Before(deadline) {
-			return n, s
-		}
-		due := now
-		if rate > 0 {
-			due = start.Add(time.Duration(float64(n) * float64(time.Second) / float64(rate)))
-			// Spin: time.Sleep's wakeup delay would count as response time, and a
-			// sleeping thread lets the vCPU go idle, which changes syscall latency.
-			for now.Before(due) {
-				now = time.Now()
-			}
-		}
+	call := func(now, due time.Time) {
 		if n%sampleEvery == 0 {
 			read()
 			end := time.Now()
@@ -123,5 +109,30 @@ func run(deadline time.Time, rate int, read func()) (uint64, samples) {
 			read()
 		}
 		n++
+	}
+	start := time.Now()
+	for {
+		now := time.Now()
+		if !now.Before(deadline) {
+			return n, s
+		}
+		if rate == 0 {
+			// Check the clock once per batch: per call it costs as much as the read
+			// and halves the unthrottled rate.
+			for range 1000 {
+				if n%sampleEvery == 0 {
+					now = time.Now()
+				}
+				call(now, now)
+			}
+			continue
+		}
+		due := start.Add(time.Duration(float64(n) * float64(time.Second) / float64(rate)))
+		// Spin: time.Sleep's wakeup delay would count as response time, and a sleeping
+		// thread lets the vCPU go idle, which changes syscall latency.
+		for now.Before(due) {
+			now = time.Now()
+		}
+		call(now, due)
 	}
 }
