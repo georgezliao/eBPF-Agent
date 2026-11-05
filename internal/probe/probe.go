@@ -74,8 +74,9 @@ type Probe struct {
 }
 
 // Open loads the BPF objects and attaches every program to the hook named by its ELF
-// section ("tracepoint/<group>/<event>", "tp_btf/<event>" or "fentry/<func>"). ringBytes sizes the
-// event ring buffer (a power-of-two multiple of the page size); 0 keeps the default.
+// section ("tracepoint/<group>/<event>", "tp_btf/<event>" or "fentry/<func>"). ringBytes
+// sizes the event ring buffer (a power-of-two multiple of the page size); 0 keeps the
+// default.
 func Open(ringBytes uint32) (*Probe, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("remove memlock limit: %w", err)
@@ -173,7 +174,9 @@ type OffCPUStack struct {
 	Max    time.Duration
 }
 
-// SetOffCPUTarget selects the process whose sleeps are collected by kernel stack.
+// SetOffCPUTarget selects the process whose sleeps are collected by kernel stack. It
+// shares the config map with SetTarget and ExportAll, and each replaces the whole config,
+// so a probe does only one of them.
 func (p *Probe) SetOffCPUTarget(tgid uint32) error {
 	return p.coll.Maps["config"].Put(uint32(0), tracelensTraceConfig{OffcpuTgid: tgid})
 }
@@ -184,7 +187,7 @@ func (p *Probe) OffCPU() ([]OffCPUStack, error) {
 		out   []OffCPUStack
 		id    int64
 		st    tracelensOffcpuStat
-		trace [127]uint64 // MAX_STACK_DEPTH
+		trace [32]uint64 // MAX_STACK_DEPTH in tracelens.bpf.c
 	)
 	it := p.coll.Maps["offcpu"].Iterate()
 	for it.Next(&id, &st) {

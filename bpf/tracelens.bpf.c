@@ -16,7 +16,8 @@
 #define EINPROGRESS 115
 #define TCP_SYN_SENT 2
 #define TCP_CLOSE 7
-#define MAX_STACK_DEPTH 127 // the kernel's default sysctl_perf_event_max_stack
+#define MAX_STACK_DEPTH 32 // the frames nearest the sleep are the useful ones
+#define NO_STACK -1
 
 enum op { OP_READ, OP_WRITE, OP_OPENAT, OP_CONNECT, OP_FSYNC, OP_RUNQ, OP_READ_WAIT, OP_RESPONSE,
        OP_RETRANS, NUM_OPS };
@@ -142,7 +143,7 @@ struct {
 
 struct sleep_start {
 	__u64 ts;
-	__s64 stack; // id in `stacks`, negative if the stack couldn't be stored
+	__s64 stack; // id in `stacks`, or NO_STACK
 };
 
 // Threads of the off-CPU target that are asleep, by TID.
@@ -153,9 +154,11 @@ struct {
 	__type(value, struct sleep_start);
 } sleeping SEC(".maps");
 
+// Preallocated, so this costs about 4 MiB on every command. Without a flag, a new stack
+// that hashes to a taken bucket isn't stored, so losses start around 100 distinct stacks.
 struct {
 	__uint(type, BPF_MAP_TYPE_STACK_TRACE);
-	__uint(max_entries, 4096);
+	__uint(max_entries, 8192);
 	__type(key, __u32);
 	__type(value, __u64[MAX_STACK_DEPTH]);
 } stacks SEC(".maps");
@@ -400,7 +403,8 @@ static __always_inline __u32 offcpu_target(void)
 // is the one that led it there.
 static __always_inline void mark_sleeping(void *ctx, __u32 tid)
 {
-	struct sleep_start s = { .ts = bpf_ktime_get_ns(), .stack = bpf_get_stackid(ctx, &stacks, 0) };
+	long id = bpf_get_stackid(ctx, &stacks, 0);
+	struct sleep_start s = { .ts = bpf_ktime_get_ns(), .stack = id < 0 ? NO_STACK : id };
 	bpf_map_update_elem(&sleeping, &tid, &s, BPF_ANY);
 }
 
@@ -417,8 +421,11 @@ static __always_inline void mark_awake(__u32 tid)
 
 	struct offcpu_stat *st = bpf_map_lookup_elem(&offcpu, &stack);
 	if (!st) {
-		static const struct offcpu_stat zero;
-		bpf_map_update_elem(&offcpu, &stack, &zero, BPF_NOEXIST);
+		// Insert the first sleep whole: userspace reads this map while it's live, and
+		// must never see an entry with a zero count.
+		struct offcpu_stat first = { .count = 1, .total_ns = dur, .max_ns = dur };
+		if (bpf_map_update_elem(&offcpu, &stack, &first, BPF_NOEXIST) == 0)
+			return;
 		st = bpf_map_lookup_elem(&offcpu, &stack);
 		if (!st)
 			return;
