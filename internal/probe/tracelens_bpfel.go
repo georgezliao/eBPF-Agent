@@ -37,6 +37,12 @@ type tracelensInflight struct {
 	Fd uint64
 }
 
+type tracelensOffcpuKey struct {
+	_      structs.HostLayout
+	Kernel int64
+	User   int64
+}
+
 type tracelensOffcpuStat struct {
 	_       structs.HostLayout
 	Count   uint64
@@ -62,7 +68,7 @@ type tracelensPendingRead struct {
 type tracelensSleepStart struct {
 	_     structs.HostLayout
 	Ts    uint64
-	Stack int64
+	Stack tracelensOffcpuKey
 }
 
 type tracelensStatsKey struct {

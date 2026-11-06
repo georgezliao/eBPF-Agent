@@ -18,6 +18,8 @@
 #define TCP_CLOSE 7
 #define MAX_STACK_DEPTH 32 // the frames nearest the sleep are the useful ones
 #define NO_STACK -1
+#define BPF_F_USER_STACK (1ULL << 8)
+#define TASK_DEAD 0x80
 
 enum op { OP_READ, OP_WRITE, OP_OPENAT, OP_CONNECT, OP_FSYNC, OP_RUNQ, OP_READ_WAIT, OP_RESPONSE,
        OP_RETRANS, NUM_OPS };
@@ -141,12 +143,19 @@ struct {
 	__type(value, struct op_stats);
 } stats SEC(".maps");
 
-struct sleep_start {
-	__u64 ts;
-	__s64 stack; // id in `stacks`, or NO_STACK
+// Ids in `stacks`, or NO_STACK.
+struct offcpu_key {
+	__s64 kernel;
+	__s64 user;
 };
 
-// Threads of the off-CPU target that are asleep, by TID.
+struct sleep_start {
+	__u64 ts;
+	struct offcpu_key stack;
+};
+
+// Threads of the off-CPU target that are asleep, by TID. Userspace also reads this, to
+// count sleeps that haven't ended yet.
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__uint(max_entries, 16384);
@@ -174,7 +183,7 @@ struct offcpu_stat {
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 4096);
-	__type(key, __s64);
+	__type(key, struct offcpu_key);
 	__type(value, struct offcpu_stat);
 } offcpu SEC(".maps");
 
@@ -399,12 +408,16 @@ static __always_inline __u32 offcpu_target(void)
 	return cfg ? cfg->offcpu_tgid : 0;
 }
 
-// Runs in sched_switch, where current is still the thread going to sleep, so the stack
-// is the one that led it there.
+// Runs in sched_switch, where current is still the thread going to sleep, so the stacks
+// are the ones that led it there.
 static __always_inline void mark_sleeping(void *ctx, __u32 tid)
 {
-	long id = bpf_get_stackid(ctx, &stacks, 0);
-	struct sleep_start s = { .ts = bpf_ktime_get_ns(), .stack = id < 0 ? NO_STACK : id };
+	long kernel = bpf_get_stackid(ctx, &stacks, 0);
+	long user = bpf_get_stackid(ctx, &stacks, BPF_F_USER_STACK);
+	struct sleep_start s = {
+		.ts = bpf_ktime_get_ns(),
+		.stack = { .kernel = kernel < 0 ? NO_STACK : kernel, .user = user < 0 ? NO_STACK : user },
+	};
 	bpf_map_update_elem(&sleeping, &tid, &s, BPF_ANY);
 }
 
@@ -416,7 +429,7 @@ static __always_inline void mark_awake(__u32 tid)
 	if (!s)
 		return;
 	__u64 dur = bpf_ktime_get_ns() - s->ts;
-	__s64 stack = s->stack;
+	struct offcpu_key stack = s->stack;
 	bpf_map_delete_elem(&sleeping, &tid);
 
 	struct offcpu_stat *st = bpf_map_lookup_elem(&offcpu, &stack);
@@ -470,7 +483,7 @@ int sched_switch(__u64 *ctx)
 	bool preempt = ctx[0];
 	if (preempt || prev_state == 0)
 		mark_runnable(prev->pid);
-	else if (prev->tgid == offcpu_target())
+	else if (!(prev_state & TASK_DEAD) && prev->tgid == offcpu_target())
 		mark_sleeping(ctx, prev->pid);
 
 	__u32 tid = next->pid;

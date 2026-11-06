@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"cmp"
 	"context"
+	"debug/elf"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,7 +19,7 @@ import (
 )
 
 // maxFrames limits how much of each stack is printed. The frames nearest the sleep
-// usually say why; the rest is the syscall entry path.
+// usually say why.
 const maxFrames = 12
 
 type ksym struct {
@@ -59,8 +60,9 @@ func symbol(syms []ksym, addr uint64) string {
 	return syms[i].name
 }
 
-// sleepFrames symbolizes a stack and drops everything up to and including __schedule: the
-// BPF program and the tracepoint plumbing are the tracer, and identical on every stack.
+// sleepFrames symbolizes a kernel stack and drops everything up to and including
+// __schedule: the BPF program and the tracepoint plumbing are the tracer, and identical on
+// every stack.
 func sleepFrames(frames []uint64, syms []ksym) []string {
 	names := make([]string, len(frames))
 	start := 0
@@ -73,19 +75,113 @@ func sleepFrames(frames []uint64, syms []ksym) []string {
 	return names[start:]
 }
 
+// userImage is the target's executable, for naming user stack frames.
+type userImage struct {
+	syms   []ksym // link-time addresses
+	bias   uint64 // runtime address - link-time address
+	lo, hi uint64 // link-time range the symbols cover
+}
+
+// loadBias finds where a position-independent executable was loaded, from the text of
+// /proc/<pid>/maps: the start of its first mapping, less that mapping's file offset.
+func loadBias(maps, exe string) (uint64, error) {
+	for line := range strings.Lines(maps) {
+		f := strings.Fields(line)
+		if len(f) < 6 || f[5] != exe {
+			continue
+		}
+		start, _, _ := strings.Cut(f[0], "-")
+		addr, err := strconv.ParseUint(start, 16, 64)
+		if err != nil {
+			return 0, err
+		}
+		off, err := strconv.ParseUint(f[2], 16, 64)
+		if err != nil {
+			return 0, err
+		}
+		return addr - off, nil
+	}
+	return 0, fmt.Errorf("%s not mapped", exe)
+}
+
+// readUserImage loads the function symbols of a process's executable. A stripped binary
+// isn't an error: its frames just print as addresses.
+func readUserImage(pid int) (userImage, error) {
+	var img userImage
+	dir := fmt.Sprintf("/proc/%d", pid)
+	exe, err := os.Readlink(dir + "/exe")
+	if err != nil {
+		return img, err
+	}
+	f, err := elf.Open(dir + "/exe")
+	if err != nil {
+		return img, err
+	}
+	defer f.Close()
+	if f.Type == elf.ET_DYN {
+		maps, err := os.ReadFile(dir + "/maps")
+		if err != nil {
+			return img, err
+		}
+		if img.bias, err = loadBias(string(maps), exe); err != nil {
+			return img, err
+		}
+	}
+	syms, err := f.Symbols()
+	if err != nil {
+		return img, nil // no symbol table
+	}
+	for _, s := range syms {
+		if elf.ST_TYPE(s.Info) == elf.STT_FUNC && s.Value != 0 {
+			img.syms = append(img.syms, ksym{s.Value, s.Name})
+			img.hi = max(img.hi, s.Value+s.Size)
+		}
+	}
+	slices.SortFunc(img.syms, func(a, b ksym) int { return cmp.Compare(a.addr, b.addr) })
+	if len(img.syms) > 0 {
+		img.lo = img.syms[0].addr
+	}
+	return img, nil
+}
+
+// frames names a user stack. Addresses outside the executable, such as shared libraries,
+// stay as addresses.
+func (img userImage) frames(pcs []uint64) []string {
+	names := make([]string, len(pcs))
+	for i, pc := range pcs {
+		if a := pc - img.bias; a >= img.lo && a < img.hi {
+			names[i] = symbol(img.syms, a)
+		} else {
+			names[i] = fmt.Sprintf("%#x", pc)
+		}
+	}
+	return names
+}
+
 // matching keeps the stacks with a frame whose name contains sub. Go keeps idle threads in
 // futex and ep_poll, and those stacks otherwise top the list on a healthy process.
-func matching(stacks []probe.OffCPUStack, syms []ksym, sub string) []probe.OffCPUStack {
+func matching(stacks []probe.OffCPUStack, syms []ksym, img userImage, sub string) []probe.OffCPUStack {
 	var out []probe.OffCPUStack
+	has := func(name string) bool { return strings.Contains(name, sub) }
 	for _, s := range stacks {
-		if slices.ContainsFunc(sleepFrames(s.Frames, syms), func(name string) bool { return strings.Contains(name, sub) }) {
+		if slices.ContainsFunc(sleepFrames(s.Kernel, syms), has) || slices.ContainsFunc(img.frames(s.User), has) {
 			out = append(out, s)
 		}
 	}
 	return out
 }
 
-func printOffCPU(w io.Writer, stacks []probe.OffCPUStack, syms []ksym, limit int, elapsed time.Duration) {
+func printFrames(w io.Writer, names []string) {
+	for i, name := range names {
+		if i == maxFrames {
+			fmt.Fprintf(w, "  ... %d more\n", len(names)-i)
+			break
+		}
+		fmt.Fprintf(w, "  %s\n", name)
+	}
+}
+
+func printOffCPU(w io.Writer, stacks []probe.OffCPUStack, syms []ksym, img userImage, limit int, elapsed time.Duration) {
 	slices.SortFunc(stacks, func(a, b probe.OffCPUStack) int { return cmp.Compare(b.Total, a.Total) })
 	var total time.Duration
 	for _, s := range stacks {
@@ -96,19 +192,17 @@ func printOffCPU(w io.Writer, stacks []probe.OffCPUStack, syms []ksym, limit int
 		if i == limit {
 			break
 		}
-		fmt.Fprintf(w, "\n%v total  %d sleeps  avg %s  max %s\n", s.Total.Round(time.Millisecond), s.Count,
-			fmtDur(s.Total/time.Duration(s.Count)), fmtDur(s.Max))
-		if len(s.Frames) == 0 {
-			fmt.Fprintln(w, "  [stack not captured]")
+		fmt.Fprintf(w, "\n%v total  %d sleeps  %d still asleep  max %s\n", s.Total.Round(time.Millisecond), s.Count, s.Asleep, fmtDur(s.Max))
+		if len(s.Kernel) == 0 {
+			fmt.Fprintln(w, "  [kernel stack not captured]")
 		}
-		names := sleepFrames(s.Frames, syms)
-		for j, name := range names {
-			if j == maxFrames {
-				fmt.Fprintf(w, "  ... %d more\n", len(names)-j)
-				break
-			}
-			fmt.Fprintf(w, "  %s\n", name)
+		printFrames(w, sleepFrames(s.Kernel, syms))
+		if len(s.User) == 0 {
+			fmt.Fprintln(w, "  [user stack not captured]")
+			continue
 		}
+		fmt.Fprintln(w, "  --")
+		printFrames(w, img.frames(s.User))
 	}
 }
 
@@ -131,6 +225,10 @@ func runOffCPU(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	img, err := readUserImage(*pid)
+	if err != nil {
+		return err
+	}
 	p, err := probe.Open(0)
 	if err != nil {
 		return err
@@ -150,8 +248,8 @@ func runOffCPU(ctx context.Context, args []string) error {
 		return err
 	}
 	if *match != "" {
-		stacks = matching(stacks, syms, *match)
+		stacks = matching(stacks, syms, img, *match)
 	}
-	printOffCPU(os.Stdout, stacks, syms, *limit, time.Since(start))
+	printOffCPU(os.Stdout, stacks, syms, img, *limit, time.Since(start))
 	return nil
 }

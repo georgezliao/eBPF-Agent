@@ -1,7 +1,7 @@
 // Package probe loads the TraceLens BPF programs, attaches them, and reads their maps.
 package probe
 
-//go:generate go tool bpf2go -target bpfel -type event -type stats_key -type op_stats -type trace_config -type offcpu_stat tracelens ../../bpf/tracelens.bpf.c -- -I../../bpf
+//go:generate go tool bpf2go -target bpfel -type event -type stats_key -type op_stats -type trace_config -type offcpu_stat -type offcpu_key -type sleep_start tracelens ../../bpf/tracelens.bpf.c -- -I../../bpf
 
 import (
 	"encoding/binary"
@@ -15,6 +15,7 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
+	"golang.org/x/sys/unix"
 )
 
 // Op is a traced syscall, matching enum op in tracelens.bpf.c.
@@ -165,13 +166,14 @@ func (p *Probe) ExportAll() error {
 	return p.coll.Maps["config"].Put(uint32(0), tracelensTraceConfig{ExportAll: 1})
 }
 
-// OffCPUStack is the time threads spent asleep after one kernel stack. Frames are
-// addresses, innermost first; empty if the stack couldn't be captured.
+// OffCPUStack is the time threads spent asleep after one pair of kernel and user stacks.
+// Frames are addresses, innermost first; empty if the stack couldn't be captured.
 type OffCPUStack struct {
-	Frames []uint64
-	Count  uint64
-	Total  time.Duration
-	Max    time.Duration
+	Kernel, User []uint64
+	Count        uint64 // finished sleeps
+	Asleep       uint64 // sleeps still going when OffCPU was called
+	Total        time.Duration
+	Max          time.Duration
 }
 
 // SetOffCPUTarget selects the process whose sleeps are collected by kernel stack. It
@@ -181,31 +183,89 @@ func (p *Probe) SetOffCPUTarget(tgid uint32) error {
 	return p.coll.Maps["config"].Put(uint32(0), tracelensTraceConfig{OffcpuTgid: tgid})
 }
 
-// OffCPU returns everything collected since the probe was opened.
+// OffCPU returns everything collected since the probe was opened. Sleeps that haven't
+// ended count up to now, so a thread blocked for most of the window still shows up.
 func (p *Probe) OffCPU() ([]OffCPUStack, error) {
+	byKey := map[tracelensOffcpuKey]*OffCPUStack{}
+	entry := func(k tracelensOffcpuKey) (*OffCPUStack, error) {
+		if s := byKey[k]; s != nil {
+			return s, nil
+		}
+		kernel, err := p.stackFrames(k.Kernel)
+		if err != nil {
+			return nil, err
+		}
+		user, err := p.stackFrames(k.User)
+		if err != nil {
+			return nil, err
+		}
+		s := &OffCPUStack{Kernel: kernel, User: user}
+		byKey[k] = s
+		return s, nil
+	}
+
 	var (
-		out   []OffCPUStack
-		id    int64
-		st    tracelensOffcpuStat
-		trace [32]uint64 // MAX_STACK_DEPTH in tracelens.bpf.c
+		key tracelensOffcpuKey
+		st  tracelensOffcpuStat
 	)
 	it := p.coll.Maps["offcpu"].Iterate()
-	for it.Next(&id, &st) {
-		s := OffCPUStack{Count: st.Count, Total: time.Duration(st.TotalNs), Max: time.Duration(st.MaxNs)}
-		if id >= 0 {
-			if err := p.coll.Maps["stacks"].Lookup(uint32(id), &trace); err != nil {
-				return nil, err
-			}
-			for _, pc := range trace {
-				if pc == 0 {
-					break
-				}
-				s.Frames = append(s.Frames, pc)
-			}
+	for it.Next(&key, &st) {
+		s, err := entry(key)
+		if err != nil {
+			return nil, err
 		}
-		out = append(out, s)
+		s.Count, s.Total, s.Max = st.Count, time.Duration(st.TotalNs), time.Duration(st.MaxNs)
 	}
-	return out, it.Err()
+	if err := it.Err(); err != nil {
+		return nil, err
+	}
+
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil { // bpf_ktime_get_ns's clock
+		return nil, err
+	}
+	var (
+		tid   uint32
+		sleep tracelensSleepStart
+	)
+	it = p.coll.Maps["sleeping"].Iterate()
+	for it.Next(&tid, &sleep) {
+		s, err := entry(sleep.Stack)
+		if err != nil {
+			return nil, err
+		}
+		d := time.Duration(ts.Nano() - int64(sleep.Ts))
+		s.Asleep++
+		s.Total += d
+		s.Max = max(s.Max, d)
+	}
+	if err := it.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]OffCPUStack, 0, len(byKey))
+	for _, s := range byKey {
+		out = append(out, *s)
+	}
+	return out, nil
+}
+
+func (p *Probe) stackFrames(id int64) ([]uint64, error) {
+	if id < 0 {
+		return nil, nil
+	}
+	var trace [32]uint64 // MAX_STACK_DEPTH in tracelens.bpf.c
+	if err := p.coll.Maps["stacks"].Lookup(uint32(id), &trace); err != nil {
+		return nil, err
+	}
+	var frames []uint64
+	for _, pc := range trace {
+		if pc == 0 {
+			break
+		}
+		frames = append(frames, pc)
+	}
+	return frames, nil
 }
 
 // RunStats returns the combined run count and run time of all BPF programs. The kernel
