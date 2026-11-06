@@ -6,6 +6,18 @@ import (
 	"time"
 )
 
+func TestWorkloadsRun(t *testing.T) {
+	for name, workload := range workloads {
+		op, err := workload()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if n, _ := run(time.Now().Add(20*time.Millisecond), 0, op); n == 0 {
+			t.Errorf("%s made no progress", name)
+		}
+	}
+}
+
 // One 50ms stall at 10k calls/s delays about 500 calls. Service time should show it as a
 // single outlier, and response time as a whole backlog.
 func TestStallCountsAgainstEveryDelayedCall(t *testing.T) {

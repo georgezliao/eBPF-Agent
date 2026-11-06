@@ -1,18 +1,18 @@
-// Command loadgen issues 1-byte read syscalls on /dev/zero at a fixed total rate (or as
-// fast as possible) and prints achieved throughput, service time (call start to return)
-// and response time (scheduled start to return) as one JSON line.
-// It's the workload for the overhead benchmarks: each call is one traced syscall, and
-// /dev/zero makes the call itself cheap, so probe overhead is a large share of it.
+// Command loadgen repeats an operation at a fixed total rate (or as fast as possible) and
+// prints achieved throughput, service time (call start to return) and response time
+// (scheduled start to return) as one JSON line. It's the workload for the overhead
+// benchmarks. The default op is a 1-byte read of /dev/zero: one traced syscall that's cheap
+// in itself, so probe overhead is a large share of it.
 package main
 
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"runtime"
 	"slices"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -38,10 +38,17 @@ type samples struct {
 }
 
 func main() {
-	workers := flag.Int("workers", 2, "goroutines issuing reads, each locked to its own thread")
-	rate := flag.Int("rate", 0, "total reads per second (0 = as fast as possible)")
+	workers := flag.Int("workers", 2, "goroutines issuing ops, each locked to its own thread")
+	rate := flag.Int("rate", 0, "total ops per second (0 = as fast as possible)")
+	name := flag.String("op", "read", "operation: read, write, eagain, openclose, pingpong or tcp")
 	dur := flag.Duration("duration", 5*time.Second, "how long to run")
 	flag.Parse()
+
+	workload, ok := workloads[*name]
+	if !ok {
+		fmt.Fprintln(os.Stderr, "loadgen: unknown -op", *name)
+		os.Exit(2)
+	}
 
 	var (
 		mu    sync.Mutex
@@ -53,7 +60,7 @@ func main() {
 	deadline := start.Add(*dur)
 	for range *workers {
 		wg.Go(func() {
-			n, s := worker(deadline, *rate / *workers)
+			n, s := worker(deadline, *rate / *workers, workload)
 			mu.Lock()
 			total += n
 			all.service = append(all.service, s.service...)
@@ -77,16 +84,14 @@ func main() {
 	json.NewEncoder(os.Stdout).Encode(r)
 }
 
-// worker opens /dev/zero on its own locked thread and runs the load against it.
-func worker(deadline time.Time, rate int) (uint64, samples) {
+// worker sets up the workload on its own locked thread and runs it.
+func worker(deadline time.Time, rate int, workload func() (func(), error)) (uint64, samples) {
 	runtime.LockOSThread()
-	fd, err := syscall.Open("/dev/zero", syscall.O_RDONLY, 0)
+	op, err := workload()
 	if err != nil {
 		panic(err)
 	}
-	defer syscall.Close(fd)
-	buf := make([]byte, 1)
-	return run(deadline, rate, func() { syscall.Read(fd, buf) })
+	return run(deadline, rate, op)
 }
 
 // run calls read until deadline. With a rate the load is open-loop: call n is due at
