@@ -17,7 +17,7 @@ import (
 )
 
 // Every sampleEvery-th call is timed; timing every call would add two clock reads to a
-// ~200ns syscall.
+// ~160ns syscall.
 const sampleEvery = 16
 
 type result struct {
@@ -126,8 +126,8 @@ func run(deadline time.Time, rate int, read func()) (uint64, samples) {
 }
 
 // runUnthrottled has no schedule, so response time equals service time. The clock is only
-// read for samples and once per batch: on every call it costs as much as the read and
-// halves the rate.
+// read for samples and once per batch: reading it on every call cut the rate by about a
+// third.
 func runUnthrottled(deadline time.Time, read func()) (uint64, samples) {
 	var (
 		n uint64

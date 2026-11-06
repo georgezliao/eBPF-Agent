@@ -22,7 +22,7 @@ def rows(path):
 
 def overhead(run):
     by = defaultdict(list)
-    for r in rows(run / "overhead.csv"):
+    for r in rows(run / "overhead_quiet.csv"):
         by[(r["mode"], int(r["target_rate"]))].append(r)
     rates = sorted({rate for _, rate in by}, key=lambda r: (r == 0, r))
     label = lambda r: "max" if r == 0 else f"{r // 1000}k"
@@ -33,13 +33,14 @@ def overhead(run):
         x = range(len(rates))
         cpu.plot(x, med("agent_cpu_pct"), "o-", color=color, label=mode)
         thr.plot(x, [v / 1e6 for v in med("achieved_ops_per_sec")], "o-", color=color, label=mode)
-        p99.plot(x, med("load_p99_ns"), "o-", color=color, label=mode)
+        p99.plot(x, med("load_response_p99_ns"), "o-", color=color, label=mode)
     for ax, title in [(cpu, "Agent CPU (% of one core)"), (thr, "Achieved reads/s (millions)"),
-                      (p99, "Workload read p99 (ns, sampled)")]:
+                      (p99, "Workload response p99 (ns, sampled)")]:
         ax.set_xticks(range(len(rates)), [label(r) for r in rates])
         ax.set_xlabel("target read rate")
         ax.set_title(title)
         ax.grid(alpha=0.3)
+    p99.set_yscale("log")
     cpu.legend()
     fig.tight_layout()
     fig.savefig(run / "overhead.png", dpi=120)
@@ -66,7 +67,7 @@ def ringsweep(run):
 
 if __name__ == "__main__":
     run = Path(sys.argv[1])
-    if (run / "overhead.csv").exists():
+    if (run / "overhead_quiet.csv").exists():
         overhead(run)
     if (run / "ringsweep.csv").exists():
         ringsweep(run)

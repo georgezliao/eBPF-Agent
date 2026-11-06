@@ -1,0 +1,9 @@
+Conditions for overhead_quiet.csv, probe_cost_quiet.csv and probe_cost_hooks_ab_quiet.csv.
+date: 2026-11-05 (local, about 19:15-19:30)
+tracelens commit: 2094f40 (all_hooks build)
+A/B older build: 4e204c7~1 (before_response_offcpu_retrans)
+vm: Lima tracelens, 4 vCPU, 4 GiB, Ubuntu 24.04, kernel 6.8.0-142-generic, arm64
+host: M4 MacBook Air, macOS 26.0, on battery (58% falling to 54%)
+
+Host 1-minute load average, sampled about every 30 s:
+2.72 3.39 3.09 3.18 2.86 3.19 2.81 2.83 2.60 2.63 2.68 2.67 2.51 2.55 2.63 2.66 2.77 3.38
