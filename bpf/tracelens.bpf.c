@@ -6,7 +6,7 @@
 // to running), OP_READ_WAIT the time from a read returning EAGAIN until a read on the same
 // fd returns something else, OP_RESPONSE the part of that wait after the last write on the
 // fd, and OP_RETRANS counts TCP retransmits. Detailed per-call events only leave the kernel
-// for the one TGID that userspace selects in `config`. Off-CPU time by kernel stack is
+// for the one TGID that userspace selects in `config`. Off-CPU time by stack is
 // collected for one TGID only, since taking a stack on every sleep isn't free.
 
 #include "headers/types.h"
@@ -143,7 +143,7 @@ struct {
 	__type(value, struct op_stats);
 } stats SEC(".maps");
 
-// Ids in `stacks`, or NO_STACK.
+// Ids in kernel_stacks and user_stacks, or NO_STACK.
 struct offcpu_key {
 	__s64 kernel;
 	__s64 user;
@@ -163,14 +163,22 @@ struct {
 	__type(value, struct sleep_start);
 } sleeping SEC(".maps");
 
-// Preallocated, so this costs about 4 MiB on every command. Without a flag, a new stack
+// Preallocated, so each costs about 4 MiB on every command. Without a flag, a new stack
 // that hashes to a taken bucket isn't stored, so losses start around 100 distinct stacks.
+// Separate maps so that user stacks, which vary more, can't crowd out kernel stacks.
 struct {
 	__uint(type, BPF_MAP_TYPE_STACK_TRACE);
 	__uint(max_entries, 8192);
 	__type(key, __u32);
 	__type(value, __u64[MAX_STACK_DEPTH]);
-} stacks SEC(".maps");
+} kernel_stacks SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_STACK_TRACE);
+	__uint(max_entries, 8192);
+	__type(key, __u32);
+	__type(value, __u64[MAX_STACK_DEPTH]);
+} user_stacks SEC(".maps");
 
 struct offcpu_stat {
 	__u64 count;
@@ -178,7 +186,7 @@ struct offcpu_stat {
 	__u64 max_ns;
 };
 
-// Off-CPU time per kernel stack. Updated from whichever CPU runs the wakeup, so unlike
+// Off-CPU time per pair of stacks. Updated from whichever CPU runs the wakeup, so unlike
 // `stats` it needs atomic adds.
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -412,8 +420,8 @@ static __always_inline __u32 offcpu_target(void)
 // are the ones that led it there.
 static __always_inline void mark_sleeping(void *ctx, __u32 tid)
 {
-	long kernel = bpf_get_stackid(ctx, &stacks, 0);
-	long user = bpf_get_stackid(ctx, &stacks, BPF_F_USER_STACK);
+	long kernel = bpf_get_stackid(ctx, &kernel_stacks, 0);
+	long user = bpf_get_stackid(ctx, &user_stacks, BPF_F_USER_STACK);
 	struct sleep_start s = {
 		.ts = bpf_ktime_get_ns(),
 		.stack = { .kernel = kernel < 0 ? NO_STACK : kernel, .user = user < 0 ? NO_STACK : user },

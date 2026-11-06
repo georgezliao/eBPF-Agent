@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"net"
 	"syscall"
 )
@@ -97,7 +96,7 @@ func tcpEcho() (func(), error) {
 	}
 	s, err := ln.Accept()
 	if err != nil {
-		return nil, fmt.Errorf("accept: %w", err)
+		return nil, err
 	}
 	go echo(func(b []byte) { s.Read(b) }, func(b []byte) { s.Write(b) })
 	buf := make([]byte, 1)

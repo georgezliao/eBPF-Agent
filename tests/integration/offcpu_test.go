@@ -5,6 +5,9 @@ package integration
 import (
 	"os"
 	"runtime"
+	"slices"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -36,12 +39,41 @@ func TestOffCPUCountsSleepsStillGoing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	lo, hi := kernelSymbol(t, "pipe_read")
 	for _, s := range stacks {
-		if s.Asleep > 0 && s.Max >= blocked*3/4 {
+		inPipeRead := slices.ContainsFunc(s.Kernel, func(pc uint64) bool { return pc >= lo && pc < hi })
+		if inPipeRead && s.Asleep > 0 && s.Max >= blocked*3/4 {
 			return
 		}
 	}
-	t.Errorf("no sleep still going for about %v: %+v", blocked, stacks)
+	t.Errorf("no sleep in pipe_read still going for about %v: %+v", blocked, stacks)
+}
+
+// kernelSymbol returns the address range of a kernel function, from /proc/kallsyms.
+func kernelSymbol(t *testing.T, name string) (lo, hi uint64) {
+	t.Helper()
+	b, err := os.ReadFile("/proc/kallsyms")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var addrs []uint64
+	for line := range strings.Lines(string(b)) {
+		f := strings.Fields(line)
+		addr, err := strconv.ParseUint(f[0], 16, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		addrs = append(addrs, addr)
+		if f[2] == name {
+			lo = addr
+		}
+	}
+	if lo == 0 {
+		t.Fatalf("%s not in kallsyms", name)
+	}
+	slices.Sort(addrs)
+	i, _ := slices.BinarySearch(addrs, lo+1)
+	return lo, addrs[i]
 }
 
 func TestOffCPUGroupsSleepsByStack(t *testing.T) {

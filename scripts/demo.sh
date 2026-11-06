@@ -21,7 +21,7 @@ trap cleanup EXIT
 # Writeback left over from an earlier run would slow the log before the fault starts.
 sync
 
-top() { { timeout -s INT 3.5 bin/tracelens top -interval 3s -n 10 || true; } | grep -E 'PID|store|client'; }
+show_top() { { timeout -s INT 3.5 bin/tracelens top -interval 3s -n 10 || true; } | grep -E 'PID|store|client'; }
 
 bin/store > "$out/store.log" &
 store=$!
@@ -32,13 +32,13 @@ bin/tracelens agent -listen 127.0.0.1:9104 -trigger 20ms -trigger-op fsync -capt
 sleep 3
 
 echo "== healthy =="
-top
+show_top
 
 echo
 echo "== fault 1: store takes 30 ms longer per request =="
 curl -s -X POST '127.0.0.1:9201/delay?d=30ms'
 sleep 2
-top
+show_top
 curl -s -X POST '127.0.0.1:9201/delay?d=0s'
 sleep 2
 
@@ -46,7 +46,7 @@ echo
 echo "== fault 2: loopback drops 5% of packets =="
 tc qdisc add dev lo root netem loss 5%
 sleep 2
-top
+show_top
 tc qdisc del dev lo root
 sleep 2
 
@@ -55,7 +55,7 @@ echo "== fault 3: 3 GB buffered write to the same disk =="
 dd if=/dev/zero of=/var/tmp/tracelens-bulk bs=1M count=3000 status=none &
 sleep 1
 bin/tracelens offcpu -pid "$store" -duration 3s -n 1 -match ext4_sync_file > "$out/offcpu.txt" &
-top
+show_top
 wait %+ 2>/dev/null || true
 sleep 3
 

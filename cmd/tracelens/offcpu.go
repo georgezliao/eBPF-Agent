@@ -181,13 +181,13 @@ func printFrames(w io.Writer, names []string) {
 	}
 }
 
-func printOffCPU(w io.Writer, stacks []probe.OffCPUStack, syms []ksym, img userImage, limit int, elapsed time.Duration) {
+func printOffCPU(w io.Writer, stacks []probe.OffCPUStack, syms []ksym, img userImage, limit int, elapsed time.Duration, scope string) {
 	slices.SortFunc(stacks, func(a, b probe.OffCPUStack) int { return cmp.Compare(b.Total, a.Total) })
 	var total time.Duration
 	for _, s := range stacks {
 		total += s.Total
 	}
-	fmt.Fprintf(w, "%v asleep across all threads in %v, %d distinct stacks\n", total.Round(time.Millisecond), elapsed.Round(time.Millisecond), len(stacks))
+	fmt.Fprintf(w, "%v asleep in %s in %v, %d distinct stacks\n", total.Round(time.Millisecond), scope, elapsed.Round(time.Millisecond), len(stacks))
 	for i, s := range stacks {
 		if i == limit {
 			break
@@ -226,8 +226,8 @@ func runOffCPU(ctx context.Context, args []string) error {
 		return err
 	}
 	img, err := readUserImage(*pid)
-	if err != nil {
-		return err
+	if err != nil { // kernel threads have no executable; kernel stacks are still useful
+		fmt.Fprintln(os.Stderr, "tracelens: user frames stay as addresses:", err)
 	}
 	p, err := probe.Open(0)
 	if err != nil {
@@ -247,9 +247,10 @@ func runOffCPU(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	scope := "all threads"
 	if *match != "" {
-		stacks = matching(stacks, syms, img, *match)
+		stacks, scope = matching(stacks, syms, img, *match), "matching stacks"
 	}
-	printOffCPU(os.Stdout, stacks, syms, img, *limit, time.Since(start))
+	printOffCPU(os.Stdout, stacks, syms, img, *limit, time.Since(start), scope)
 	return nil
 }

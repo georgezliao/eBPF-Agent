@@ -23,8 +23,9 @@ func main() {
 	flag.Parse()
 
 	var (
-		mu  sync.Mutex
-		lat []time.Duration
+		mu       sync.Mutex
+		lat      []time.Duration
+		failures int
 	)
 	body := make([]byte, *size)
 	// The default keeps two idle connections per host, so more workers would reconnect.
@@ -34,14 +35,13 @@ func main() {
 		go func() {
 			for due := time.Now(); ; due = due.Add(interval) {
 				time.Sleep(time.Until(due))
-				resp, err := client.Post(*url, "application/octet-stream", bytes.NewReader(body))
-				if err != nil {
-					continue // store isn't up yet
-				}
-				io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
+				ok := commit(client, *url, body)
 				mu.Lock()
-				lat = append(lat, time.Since(due))
+				if ok {
+					lat = append(lat, time.Since(due))
+				} else {
+					failures++
+				}
 				mu.Unlock()
 			}
 		}()
@@ -54,7 +54,20 @@ func main() {
 			fmt.Printf("%s  requests %d  p50 %v  p99 %v\n", time.Now().Format("15:04:05"), n,
 				lat[n/2].Round(time.Microsecond), lat[n*99/100].Round(time.Microsecond))
 		}
-		lat = lat[:0]
+		if failures > 0 {
+			fmt.Printf("%s  failed %d\n", time.Now().Format("15:04:05"), failures)
+		}
+		lat, failures = lat[:0], 0
 		mu.Unlock()
 	}
+}
+
+func commit(client *http.Client, url string, body []byte) bool {
+	resp, err := client.Post(url, "application/octet-stream", bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode == http.StatusOK
 }

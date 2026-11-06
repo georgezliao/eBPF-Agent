@@ -176,7 +176,7 @@ type OffCPUStack struct {
 	Max          time.Duration
 }
 
-// SetOffCPUTarget selects the process whose sleeps are collected by kernel stack. It
+// SetOffCPUTarget selects the process whose sleeps are collected by stack. It
 // shares the config map with SetTarget and ExportAll, and each replaces the whole config,
 // so a probe does only one of them.
 func (p *Probe) SetOffCPUTarget(tgid uint32) error {
@@ -191,11 +191,11 @@ func (p *Probe) OffCPU() ([]OffCPUStack, error) {
 		if s := byKey[k]; s != nil {
 			return s, nil
 		}
-		kernel, err := p.stackFrames(k.Kernel)
+		kernel, err := p.stackFrames("kernel_stacks", k.Kernel)
 		if err != nil {
 			return nil, err
 		}
-		user, err := p.stackFrames(k.User)
+		user, err := p.stackFrames("user_stacks", k.User)
 		if err != nil {
 			return nil, err
 		}
@@ -224,12 +224,21 @@ func (p *Probe) OffCPU() ([]OffCPUStack, error) {
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil { // bpf_ktime_get_ns's clock
 		return nil, err
 	}
+	// The kernel deletes from this map constantly, and when the iterator's cursor is
+	// deleted it restarts from the first bucket. Keying by TID absorbs the repeats.
+	asleep := map[uint32]tracelensSleepStart{}
 	var (
 		tid   uint32
 		sleep tracelensSleepStart
 	)
 	it = p.coll.Maps["sleeping"].Iterate()
 	for it.Next(&tid, &sleep) {
+		asleep[tid] = sleep
+	}
+	if err := it.Err(); err != nil && !errors.Is(err, ebpf.ErrIterationAborted) {
+		return nil, err
+	}
+	for _, sleep := range asleep {
 		s, err := entry(sleep.Stack)
 		if err != nil {
 			return nil, err
@@ -239,9 +248,6 @@ func (p *Probe) OffCPU() ([]OffCPUStack, error) {
 		s.Total += d
 		s.Max = max(s.Max, d)
 	}
-	if err := it.Err(); err != nil {
-		return nil, err
-	}
 
 	out := make([]OffCPUStack, 0, len(byKey))
 	for _, s := range byKey {
@@ -250,12 +256,12 @@ func (p *Probe) OffCPU() ([]OffCPUStack, error) {
 	return out, nil
 }
 
-func (p *Probe) stackFrames(id int64) ([]uint64, error) {
+func (p *Probe) stackFrames(m string, id int64) ([]uint64, error) {
 	if id < 0 {
 		return nil, nil
 	}
 	var trace [32]uint64 // MAX_STACK_DEPTH in tracelens.bpf.c
-	if err := p.coll.Maps["stacks"].Lookup(uint32(id), &trace); err != nil {
+	if err := p.coll.Maps[m].Lookup(uint32(id), &trace); err != nil {
 		return nil, err
 	}
 	var frames []uint64

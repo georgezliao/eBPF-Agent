@@ -42,6 +42,7 @@ func main() {
 	rate := flag.Int("rate", 0, "total ops per second (0 = as fast as possible)")
 	name := flag.String("op", "read", "operation: read, write, eagain, openclose, pingpong or tcp")
 	dur := flag.Duration("duration", 5*time.Second, "how long to run")
+	delay := flag.Duration("delay", 0, "wait this long before starting, so a tracer can attach to the process first")
 	flag.Parse()
 
 	workload, ok := workloads[*name]
@@ -50,6 +51,7 @@ func main() {
 		os.Exit(2)
 	}
 
+	time.Sleep(*delay)
 	var (
 		mu    sync.Mutex
 		total uint64
@@ -94,13 +96,13 @@ func worker(deadline time.Time, rate int, workload func() (func(), error)) (uint
 	return run(deadline, rate, op)
 }
 
-// run calls read until deadline. With a rate the load is open-loop: call n is due at
+// run calls op until deadline. With a rate the load is open-loop: call n is due at
 // start + n/rate whatever happened to earlier calls, so after a stall the calls it delayed
 // run back to back and their response time includes the wait. Timing only the call itself
 // would record one slow sample for the stall and hide the rest (coordinated omission).
-func run(deadline time.Time, rate int, read func()) (uint64, samples) {
+func run(deadline time.Time, rate int, op func()) (uint64, samples) {
 	if rate == 0 {
-		return runUnthrottled(deadline, read)
+		return runUnthrottled(deadline, op)
 	}
 	var (
 		n uint64
@@ -119,12 +121,12 @@ func run(deadline time.Time, rate int, read func()) (uint64, samples) {
 			now = time.Now()
 		}
 		if n%sampleEvery == 0 {
-			read()
+			op()
 			end := time.Now()
 			s.service = append(s.service, end.Sub(now))
 			s.response = append(s.response, end.Sub(due))
 		} else {
-			read()
+			op()
 		}
 		n++
 	}
@@ -133,7 +135,7 @@ func run(deadline time.Time, rate int, read func()) (uint64, samples) {
 // runUnthrottled has no schedule, so response time equals service time. The clock is only
 // read for samples and once per batch: reading it on every call cut the rate by about a
 // third.
-func runUnthrottled(deadline time.Time, read func()) (uint64, samples) {
+func runUnthrottled(deadline time.Time, op func()) (uint64, samples) {
 	var (
 		n uint64
 		s samples
@@ -142,12 +144,12 @@ func runUnthrottled(deadline time.Time, read func()) (uint64, samples) {
 		for range 1024 {
 			if n%sampleEvery == 0 {
 				start := time.Now()
-				read()
+				op()
 				d := time.Since(start)
 				s.service = append(s.service, d)
 				s.response = append(s.response, d)
 			} else {
-				read()
+				op()
 			}
 			n++
 		}

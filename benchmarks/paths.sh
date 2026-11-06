@@ -8,7 +8,9 @@
 #
 #   scripts/linux.sh benchmarks/paths.sh > benchmarks/results/paths.csv
 #
-# Env: OPS, REPS, DURATION, WORKERS.
+# or benchmarks/paths_quiet.sh on a machine other work is using.
+#
+# Env: OPS, MODES, REPS, DURATION, WORKERS.
 set -euo pipefail
 
 OPS=${OPS:-"read write eagain openclose pingpong tcp"}
@@ -18,22 +20,24 @@ WORKERS=${WORKERS:-2}
 PORT=9105
 ready() { until curl -sf "127.0.0.1:$PORT/metrics" >/dev/null; do sleep 0.1; done; }
 
-modes="baseline current offcpu"
-[ -x bin/tracelens-old ] && modes="baseline previous current offcpu"
+MODES=${MODES:-baseline previous current offcpu}
+[ -x bin/tracelens-old ] || MODES=${MODES/previous /}
 
 echo "op,rep,mode,ops_per_sec"
 for rep in $(seq "$REPS"); do
   for op in $OPS; do
-    for mode in $modes; do
+    for mode in $MODES; do
       agent=
       case $mode in
         previous) bin/tracelens-old agent -listen 127.0.0.1:$PORT >/dev/null 2>&1 & agent=$!; ready ;;
         current) bin/tracelens agent -listen 127.0.0.1:$PORT >/dev/null 2>&1 & agent=$!; ready ;;
       esac
       out=$(mktemp)
-      bin/loadgen -op "$op" -workers "$WORKERS" -duration "${DURATION}s" >"$out" & load=$!
+      # offcpu needs the load's PID, so the load waits for it to attach.
+      delay=0s; [ "$mode" = offcpu ] && delay=2s
+      bin/loadgen -op "$op" -workers "$WORKERS" -duration "${DURATION}s" -delay "$delay" >"$out" & load=$!
       if [ "$mode" = offcpu ]; then
-        bin/tracelens offcpu -pid "$load" -duration "$((DURATION + 1))s" >/dev/null &
+        bin/tracelens offcpu -pid "$load" -duration "$((DURATION + 3))s" >/dev/null &
         agent=$!
       fi
       wait "$load"

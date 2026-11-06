@@ -93,14 +93,15 @@ const (
 	tracelensMapActive          = "active"
 	tracelensMapConfig          = "config"
 	tracelensMapEvents          = "events"
+	tracelensMapKernelStacks    = "kernel_stacks"
 	tracelensMapLost            = "lost"
 	tracelensMapOffcpu          = "offcpu"
 	tracelensMapReadWait        = "read_wait"
 	tracelensMapRunnable        = "runnable"
 	tracelensMapSleeping        = "sleeping"
 	tracelensMapSockOwner       = "sock_owner"
-	tracelensMapStacks          = "stacks"
 	tracelensMapStats           = "stats"
+	tracelensMapUserStacks      = "user_stacks"
 	tracelensProgEnterClose     = "enter_close"
 	tracelensProgEnterConnect   = "enter_connect"
 	tracelensProgEnterFdatasync = "enter_fdatasync"
@@ -190,17 +191,18 @@ type tracelensProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type tracelensMapSpecs struct {
-	Active    *ebpf.MapSpec `ebpf:"active"`
-	Config    *ebpf.MapSpec `ebpf:"config"`
-	Events    *ebpf.MapSpec `ebpf:"events"`
-	Lost      *ebpf.MapSpec `ebpf:"lost"`
-	Offcpu    *ebpf.MapSpec `ebpf:"offcpu"`
-	ReadWait  *ebpf.MapSpec `ebpf:"read_wait"`
-	Runnable  *ebpf.MapSpec `ebpf:"runnable"`
-	Sleeping  *ebpf.MapSpec `ebpf:"sleeping"`
-	SockOwner *ebpf.MapSpec `ebpf:"sock_owner"`
-	Stacks    *ebpf.MapSpec `ebpf:"stacks"`
-	Stats     *ebpf.MapSpec `ebpf:"stats"`
+	Active       *ebpf.MapSpec `ebpf:"active"`
+	Config       *ebpf.MapSpec `ebpf:"config"`
+	Events       *ebpf.MapSpec `ebpf:"events"`
+	KernelStacks *ebpf.MapSpec `ebpf:"kernel_stacks"`
+	Lost         *ebpf.MapSpec `ebpf:"lost"`
+	Offcpu       *ebpf.MapSpec `ebpf:"offcpu"`
+	ReadWait     *ebpf.MapSpec `ebpf:"read_wait"`
+	Runnable     *ebpf.MapSpec `ebpf:"runnable"`
+	Sleeping     *ebpf.MapSpec `ebpf:"sleeping"`
+	SockOwner    *ebpf.MapSpec `ebpf:"sock_owner"`
+	Stats        *ebpf.MapSpec `ebpf:"stats"`
+	UserStacks   *ebpf.MapSpec `ebpf:"user_stacks"`
 }
 
 // tracelensVariableSpecs contains global variables before they are loaded into the kernel.
@@ -230,17 +232,18 @@ func (o *tracelensObjects) Close() error {
 //
 // It can be passed to loadTracelensObjects or ebpf.CollectionSpec.LoadAndAssign.
 type tracelensMaps struct {
-	Active    *ebpf.Map `ebpf:"active"`
-	Config    *ebpf.Map `ebpf:"config"`
-	Events    *ebpf.Map `ebpf:"events"`
-	Lost      *ebpf.Map `ebpf:"lost"`
-	Offcpu    *ebpf.Map `ebpf:"offcpu"`
-	ReadWait  *ebpf.Map `ebpf:"read_wait"`
-	Runnable  *ebpf.Map `ebpf:"runnable"`
-	Sleeping  *ebpf.Map `ebpf:"sleeping"`
-	SockOwner *ebpf.Map `ebpf:"sock_owner"`
-	Stacks    *ebpf.Map `ebpf:"stacks"`
-	Stats     *ebpf.Map `ebpf:"stats"`
+	Active       *ebpf.Map `ebpf:"active"`
+	Config       *ebpf.Map `ebpf:"config"`
+	Events       *ebpf.Map `ebpf:"events"`
+	KernelStacks *ebpf.Map `ebpf:"kernel_stacks"`
+	Lost         *ebpf.Map `ebpf:"lost"`
+	Offcpu       *ebpf.Map `ebpf:"offcpu"`
+	ReadWait     *ebpf.Map `ebpf:"read_wait"`
+	Runnable     *ebpf.Map `ebpf:"runnable"`
+	Sleeping     *ebpf.Map `ebpf:"sleeping"`
+	SockOwner    *ebpf.Map `ebpf:"sock_owner"`
+	Stats        *ebpf.Map `ebpf:"stats"`
+	UserStacks   *ebpf.Map `ebpf:"user_stacks"`
 }
 
 func (m *tracelensMaps) Close() error {
@@ -248,14 +251,15 @@ func (m *tracelensMaps) Close() error {
 		m.Active,
 		m.Config,
 		m.Events,
+		m.KernelStacks,
 		m.Lost,
 		m.Offcpu,
 		m.ReadWait,
 		m.Runnable,
 		m.Sleeping,
 		m.SockOwner,
-		m.Stacks,
 		m.Stats,
+		m.UserStacks,
 	)
 }
 
