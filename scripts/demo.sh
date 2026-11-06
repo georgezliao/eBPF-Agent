@@ -1,42 +1,70 @@
 #!/usr/bin/env bash
-# Reproduce a slowdown and let TraceLens find it. Run as root on Linux, or from macOS:
+# Inject three faults into a small service and let TraceLens tell them apart. Run as root
+# on Linux, or from macOS:
 #
 #   make build && scripts/linux.sh scripts/demo.sh
 #
-# bin/demo commits 200 requests/s to a write-ahead log (write + fdatasync). After a few
-# healthy seconds, a bulk writer fills the page cache on the same disk, and the WAL's
-# fdatasync calls have to wait behind its writeback. The agent watches fsync p99 and
-# captures the demo process when it crosses 20 ms.
+# bin/client sends 200 commits/s to bin/store, which appends each to a log with write +
+# fdatasync. Each fault runs for a few seconds, then gets removed:
+#   1. the store sleeps 30 ms per request, as if a dependency got slow
+#   2. loopback drops 5% of packets
+#   3. a 3 GB buffered write fills the page cache on the same disk
 set -euo pipefail
 cd "$(dirname "$0")/.."
 out=$(mktemp -d)
-trap 'kill $(jobs -p) 2>/dev/null; rm -f /var/tmp/tracelens-bulk' EXIT
-# Writeback left over from an earlier run would slow the WAL before the bulk write starts.
+cleanup() {
+  kill $(jobs -p) 2>/dev/null || true
+  tc qdisc del dev lo root 2>/dev/null || true
+  rm -f /var/tmp/tracelens-bulk /var/tmp/tracelens-demo.wal
+}
+trap cleanup EXIT
+# Writeback left over from an earlier run would slow the log before the fault starts.
 sync
 
-bin/demo -rate 200 > "$out/demo.log" &
-demo=$!
-bin/tracelens agent -listen 127.0.0.1:9104 -trigger 20ms -trigger-op fsync -capture 5s -dir "$out" \
+top() { { timeout -s INT 3.5 bin/tracelens top -interval 3s -n 10 || true; } | grep -E 'PID|store|client'; }
+
+bin/store > "$out/store.log" &
+store=$!
+bin/client > "$out/client.log" &
+sleep 1
+bin/tracelens agent -listen 127.0.0.1:9104 -trigger 20ms -trigger-op fsync -capture 3s -dir "$out" \
   > "$out/agent.log" 2>&1 &
 sleep 3
 
-echo "== healthy: tracelens top =="
-{ timeout -s INT 2.5 bin/tracelens top -n 4 || true; } | tail -n +3
+echo "== healthy =="
+top
 
 echo
-echo "== injecting a 3 GB buffered write to /var/tmp =="
+echo "== fault 1: store takes 30 ms longer per request =="
+curl -s -X POST '127.0.0.1:9201/delay?d=30ms'
+sleep 2
+top
+curl -s -X POST '127.0.0.1:9201/delay?d=0s'
+sleep 2
+
+echo
+echo "== fault 2: loopback drops 5% of packets =="
+tc qdisc add dev lo root netem loss 5%
+sleep 2
+top
+tc qdisc del dev lo root
+sleep 2
+
+echo
+echo "== fault 3: 3 GB buffered write to the same disk =="
 dd if=/dev/zero of=/var/tmp/tracelens-bulk bs=1M count=3000 status=none &
+sleep 1
+bin/tracelens offcpu -pid "$store" -duration 3s -n 1 -match ext4_sync_file > "$out/offcpu.txt" &
+top
+wait %+ 2>/dev/null || true
 sleep 3
-echo "== during the bulk write: tracelens top =="
-{ timeout -s INT 2.5 bin/tracelens top -n 4 || true; } | tail -n +3
-sleep 6
 
 echo
-echo "== demo's own view (per-second request latency) =="
-cat "$out/demo.log"
+echo "== store's fdatasync sleeps during fault 3: tracelens offcpu =="
+cat "$out/offcpu.txt"
+echo
+echo "== client's own view (per-second request latency) =="
+cat "$out/client.log"
 echo
 echo "== agent log (triggered capture) =="
 cat "$out/agent.log"
-echo
-echo "capture files in $out:"
-ls "$out"/*.jsonl

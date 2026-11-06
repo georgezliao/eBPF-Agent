@@ -1,0 +1,94 @@
+== healthy ==
+    PID                     COMM  READ/s  WRITE/s  OPEN/s  CONN/s  FSYNC/s  ERR/s  READ p99  WRITE p99  FSYNC p99  RWAIT p99  RESP p99  RUNQ p99  RETRANS/s
+  61750                    store    1814      400       0       0      200    0.0      33µs      262µs      4.2ms    134.2ms   134.2ms     524µs        0.0
+  61751                   client     483      484       0       0        0    0.0      33µs      131µs          -    134.2ms    16.8ms     524µs        0.0
+
+== fault 1: store takes 30 ms longer per request ==
+    PID                     COMM  READ/s  WRITE/s  OPEN/s  CONN/s  FSYNC/s  ERR/s  READ p99  WRITE p99  FSYNC p99  RWAIT p99  RESP p99  RUNQ p99  RETRANS/s
+  61750                    store    1841      430       0       0      200    0.0      33µs      262µs      4.2ms     67.1ms    16.8ms     524µs        0.0
+  61751                   client     457      458       0       0        0    0.0      33µs      131µs          -     67.1ms    67.1ms     524µs        0.0
+
+== fault 2: loopback drops 5% of packets ==
+    PID               COMM  READ/s  WRITE/s  OPEN/s  CONN/s  FSYNC/s  ERR/s  READ p99  WRITE p99  FSYNC p99  RWAIT p99  RESP p99  RUNQ p99  RETRANS/s
+  61750              store    1798      398       0       0      198    0.0      66µs      262µs      8.4ms    268.4ms   268.4ms     262µs       12.0
+  61751             client     444      446       0       0        0    0.0      33µs      262µs          -    536.9ms   268.4ms     524µs       24.0
+
+== fault 3: 3 GB buffered write to the same disk ==
+    PID                     COMM  READ/s  WRITE/s  OPEN/s  CONN/s  FSYNC/s  ERR/s  READ p99  WRITE p99  FSYNC p99  RWAIT p99  RESP p99  RUNQ p99  RETRANS/s
+  61750                    store    1818      403       0       0      201    0.0      66µs        1ms     33.6ms    536.9ms   134.2ms       1ms        0.0
+  61751                   client     455      453       0       0        0    0.0      33µs      131µs          -    536.9ms   536.9ms       1ms        0.0
+
+== store's fdatasync sleeps during fault 3: tracelens offcpu ==
+2.01s asleep across all threads in 3.003s, 3 distinct stacks
+
+1.826s total  600 sleeps  avg 3ms  max 258.7ms
+  schedule
+  jbd2_log_wait_commit
+  jbd2_complete_transaction
+  ext4_fc_commit
+  ext4_sync_file
+  vfs_fsync_range
+  do_fsync
+  __arm64_sys_fdatasync
+  invoke_syscall
+  el0_svc_common.constprop.0
+  do_el0_svc
+  el0_svc
+  ... 2 more
+
+== client's own view (per-second request latency) ==
+11:19:41  requests 192  p50 7.751ms  p99 115.871ms
+11:19:42  requests 200  p50 7.772ms  p99 13.841ms
+11:19:43  requests 200  p50 8.315ms  p99 17.391ms
+11:19:44  requests 200  p50 8.622ms  p99 17.677ms
+11:19:45  requests 200  p50 5.85ms  p99 14.749ms
+11:19:46  requests 200  p50 8.571ms  p99 16.425ms
+11:19:47  requests 200  p50 9.058ms  p99 16.639ms
+11:19:48  requests 200  p50 7.885ms  p99 38.201ms
+11:19:49  requests 200  p50 36.724ms  p99 39.746ms
+11:19:50  requests 200  p50 36.825ms  p99 40.706ms
+11:19:51  requests 200  p50 36.245ms  p99 39.743ms
+11:19:52  requests 197  p50 37.204ms  p99 40.877ms
+11:19:53  requests 201  p50 37.075ms  p99 40.364ms
+11:19:54  requests 202  p50 35.923ms  p99 40.308ms
+11:19:55  requests 200  p50 7.861ms  p99 16.22ms
+11:19:56  requests 194  p50 8.045ms  p99 16.521ms
+11:19:57  requests 199  p50 7.754ms  p99 413.541ms
+11:19:58  requests 202  p50 6.721ms  p99 240.796ms
+11:19:59  requests 192  p50 78.393ms  p99 648.584ms
+11:20:00  requests 211  p50 8.41ms  p99 452.443ms
+11:20:01  requests 198  p50 9.027ms  p99 403.483ms
+11:20:02  requests 204  p50 8.809ms  p99 396.569ms
+11:20:03  requests 200  p50 8.167ms  p99 15.979ms
+11:20:04  requests 200  p50 7.947ms  p99 20.381ms
+11:20:05  requests 200  p50 18.195ms  p99 56.91ms
+11:20:06  requests 138  p50 18.088ms  p99 129.792ms
+11:20:07  requests 262  p50 464.206ms  p99 690.677ms
+11:20:08  requests 200  p50 10.719ms  p99 26.766ms
+11:20:09  requests 200  p50 6.689ms  p99 16.055ms
+11:20:10  requests 200  p50 7.751ms  p99 15.832ms
+11:20:11  requests 200  p50 8.002ms  p99 18.167ms
+
+== agent log (triggered capture) ==
+2026/11/06 11:19:41 serving metrics on 127.0.0.1:9104/metrics
+2026/11/06 11:20:05 pid 61750 (store): fsync p99 33.6ms >= 20ms, capturing 3s to /tmp/tmp.ZTk4baSoVX/tracelens-61750-20261106-112005.jsonl
+        OP  CALLS  ERRORS     p50      p99      MAX
+      read   5442       0     2µs     31µs    905µs
+     write   1201       0    43µs    443µs    1.3ms
+     fsync    600       0   1.3ms   25.8ms  263.2ms
+      runq   7095       0     6µs    425µs    3.4ms
+  readwait    636       0  36.3ms  493.4ms  640.3ms
+  response    600       0   3.5ms   73.6ms  114.3ms
+events lost: 0
+
+longest syscalls:
+  263.2ms  tid 61823  fsync  ret 0
+  242.8ms  tid 61759  fsync  ret 0
+  228.2ms  tid 61765  fsync  ret 0
+  128.5ms  tid 61759  fsync  ret 0
+  66.2ms   tid 61762  fsync  ret 0
+  27ms     tid 61765  fsync  ret 0
+  25.8ms   tid 61762  fsync  ret 0
+  23.7ms   tid 61765  fsync  ret 0
+  22.2ms   tid 61823  fsync  ret 0
+  19ms     tid 61765  fsync  ret 0

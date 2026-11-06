@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/georgezliao/tracelens/internal/probe"
 )
 
 func TestSymbols(t *testing.T) {
@@ -23,5 +25,14 @@ ffff000000003000 T ep_poll	[kernel]
 	got := sleepFrames([]uint64{0xffff000000000100, 0xffff000000001010, 0xffff000000002000, 0xffff000000003000}, syms)
 	if strings.Join(got, " ") != "schedule ep_poll" {
 		t.Errorf("sleepFrames = %v", got)
+	}
+
+	stacks := []probe.OffCPUStack{
+		{Frames: []uint64{0xffff000000001010, 0xffff000000003000}},
+		{Frames: []uint64{0xffff000000002000}},
+		{},
+	}
+	if kept := matching(stacks, syms, "poll"); len(kept) != 1 || len(kept[0].Frames) != 2 {
+		t.Errorf("matching kept %+v", kept)
 	}
 }

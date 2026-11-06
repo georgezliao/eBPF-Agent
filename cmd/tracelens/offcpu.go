@@ -73,6 +73,18 @@ func sleepFrames(frames []uint64, syms []ksym) []string {
 	return names[start:]
 }
 
+// matching keeps the stacks with a frame whose name contains sub. Go keeps idle threads in
+// futex and ep_poll, and those stacks otherwise top the list on a healthy process.
+func matching(stacks []probe.OffCPUStack, syms []ksym, sub string) []probe.OffCPUStack {
+	var out []probe.OffCPUStack
+	for _, s := range stacks {
+		if slices.ContainsFunc(sleepFrames(s.Frames, syms), func(name string) bool { return strings.Contains(name, sub) }) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func printOffCPU(w io.Writer, stacks []probe.OffCPUStack, syms []ksym, limit int, elapsed time.Duration) {
 	slices.SortFunc(stacks, func(a, b probe.OffCPUStack) int { return cmp.Compare(b.Total, a.Total) })
 	var total time.Duration
@@ -105,6 +117,7 @@ func runOffCPU(ctx context.Context, args []string) error {
 	pid := fs.Int("pid", 0, "process to follow")
 	dur := fs.Duration("duration", 10*time.Second, "how long to collect")
 	limit := fs.Int("n", 5, "stacks to print")
+	match := fs.String("match", "", "only stacks with a frame containing this")
 	fs.Parse(args)
 	if *pid == 0 {
 		return errors.New("-pid is required")
@@ -135,6 +148,9 @@ func runOffCPU(ctx context.Context, args []string) error {
 	stacks, err := p.OffCPU()
 	if err != nil {
 		return err
+	}
+	if *match != "" {
+		stacks = matching(stacks, syms, *match)
 	}
 	printOffCPU(os.Stdout, stacks, syms, *limit, time.Since(start))
 	return nil

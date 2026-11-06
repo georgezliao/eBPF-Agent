@@ -2,42 +2,46 @@
 
 TraceLens is a Linux eBPF tool that shows, per process, how long syscalls take and how long threads wait for a CPU. It traces `read`, `write`, `openat`, `connect`, `fsync`/`fdatasync`, run-queue delay, how long non-blocking reads wait for data, and TCP retransmits. It keeps per-process latency histograms inside the kernel and only streams individual calls to userspace for one process at a time, when asked or when a latency threshold trips. For one process it can also show which kernel stacks its threads slept in.
 
-It's written in Go and C with [cilium/ebpf](https://github.com/cilium/ebpf) and `bpf2go`. The output below is from the [demo](docs/demo.md) while a bulk write was slowing its fsyncs; the `trace` part was printed by the agent's triggered capture, which runs the same code as `tracelens trace`.
+It's written in Go and C with [cilium/ebpf](https://github.com/cilium/ebpf) and `bpf2go`. The output below is from the [demo](docs/demo.md), where a client's requests to a small service get slow for three different reasons. The columns are trimmed from `tracelens top`:
 
 ```
-$ tracelens top
-   PID             COMM  READ/s  WRITE/s  OPEN/s  CONN/s  FSYNC/s  ERR/s  READ p99  WRITE p99  FSYNC p99  RUNQ p99
-  6714             demo       0      197       0       0      196    0.0         -      262µs     16.8ms      66µs
-   302  systemd-journal      12        0       9       0        0    1.0      66µs          -          -     131µs
+                          FSYNC p99  RESP p99  RETRANS/s
+healthy      store            4.2ms   134.2ms        0.0
+             client               -    16.8ms        0.0
+slow service store            4.2ms    16.8ms        0.0
+             client               -    67.1ms        0.0
+packet loss  store            4.2ms   536.9ms       13.7
+             client               -   536.9ms       26.7
+busy disk    store           67.1ms     4.2ms        0.0
+             client               -   268.4ms        0.3
+```
 
-$ tracelens trace -pid 6714 -duration 5s
-     OP  CALLS  ERRORS    p50    p99     MAX
-  write    975       0   20µs   76µs   1.2ms
-  fsync    970       0  738µs  2.9ms  80.1ms
-   runq  11554       0    4µs   34µs     2ms
-events lost: 0
+The client's response time rises every time, and the other columns say why. A slow service leaves fsync and retransmits alone, packet loss shows up as retransmits, and only the busy disk moves fsync. (The store's `RESP` is the client's pause between requests, not the store's speed.) `offcpu` then shows what the slow fsyncs slept on:
 
-longest syscalls:
-  80.1ms  tid 6714  fsync  ret 0
-  56.3ms  tid 6714  fsync  ret 0
+```
+$ tracelens offcpu -pid 61533 -duration 3s -n 1 -match ext4_sync_file
+2.205s total  546 sleeps  avg 4ms  max 111.1ms
+  schedule
+  jbd2_log_wait_commit
+  jbd2_complete_transaction
+  ext4_fc_commit
+  ext4_sync_file
   ...
 ```
-
-This output was captured before the `RWAIT p99`, `RESP p99` and `RETRANS/s` columns were added to `top`.
 
 ## Commands
 
 ```
 tracelens top   [-interval 2s] [-n 15]
 tracelens trace -pid PID [-duration 10s] [-min 0] [-out events.jsonl]
-tracelens offcpu -pid PID [-duration 10s] [-n 5]
+tracelens offcpu -pid PID [-duration 10s] [-n 5] [-match NAME]
 tracelens agent [-listen :9090] [-interval 1s]
                 [-trigger 20ms -trigger-op fsync -capture 10s -dir /tmp]
 ```
 
 - **`top`** prints syscall rates, error rates and p99 per process every interval, sorted by syscall rate.
 - **`trace`** follows one process for a fixed time and reports exact p50/p99/max per op, the longest calls, and how many events were dropped. `-min` filters short calls in the kernel; `-out` writes every call as a JSON line.
-- **`offcpu`** groups one process's sleeps by kernel stack and prints the stacks with the most time asleep. This is how to find out why a thread was waiting: `balance_dirty_pages` under a slow `write`, `ep_poll` for an idle Go runtime.
+- **`offcpu`** groups one process's sleeps by kernel stack and prints the stacks with the most time asleep. `-match` keeps stacks with a frame containing that name, since Go's idle threads otherwise fill the list. This is how to find out why a thread was waiting: `balance_dirty_pages` under a slow `write`, `ep_poll` for an idle Go runtime.
 - **`agent`** serves Prometheus metrics at `/metrics`: per-op call, error and byte counters, latency histograms, run-queue delay, read wait and response histograms, TCP retransmits, and drop counters. Labels are per op only, with no PID label, so the number of series stays fixed. With `-trigger`, it captures whichever process's interval p99 for `-trigger-op` reaches the threshold, using the same code as `trace`, and writes the capture to `-dir`.
 
 Errors exclude EAGAIN and EINPROGRESS, which non-blocking I/O returns as a normal step. Read wait (`readwait`, `RWAIT`) is the time from a `read` returning EAGAIN until the next `read` on the same fd returns; for Go sockets and pipes, which never block in `read`, it's the main place their waits show up. Response (`response`, `RESP`) is the part of that wait after the last `write` on the fd, so on a keep-alive connection the client sees the server's response time without the idle gap before the request.
@@ -61,7 +65,7 @@ Only tested on Ubuntu 24.04 (kernel 6.8, arm64) in a Lima VM.
 ## Build and test
 
 ```
-make build            # bin/tracelens, bin/loadgen, bin/demo for linux/$GOARCH
+make build            # bin/tracelens, bin/loadgen, bin/store, bin/client for linux/$GOARCH
 make check            # go vet + unit tests (runs on macOS too)
 make itest            # integration tests: load the real programs, as root
 make check-generated  # regenerate BPF objects and fail if they differ from the committed ones
@@ -80,7 +84,7 @@ The integration tests in `tests/integration` drive known workloads (slow pipe re
 
 ## Demo
 
-`scripts/linux.sh scripts/demo.sh` runs a service that does `write` + `fdatasync` for every request, then starts an unrelated 3 GB buffered write on the same disk. The agent notices the service's fsync p99 jump and captures it. [docs/demo.md](docs/demo.md) walks through one run, including what the triggered capture missed.
+`scripts/linux.sh scripts/demo.sh` runs a client calling a small service that commits every request with `write` + `fdatasync`, then injects a slow service, packet loss and a 3 GB buffered write in turn. [docs/demo.md](docs/demo.md) walks through one run, including what each view missed.
 
 ## Overhead
 
@@ -148,7 +152,8 @@ bpf/headers/               libbpf helper headers + a minimal types.h
 internal/probe/            load/attach, map access, bpf2go output
 internal/hist/             percentiles from log2 histograms
 cmd/tracelens/             top, trace, agent
-cmd/loadgen/, cmd/demo/    benchmark workload, demo service
+cmd/loadgen/               benchmark workload
+cmd/store/, cmd/client/    demo service and its caller
 benchmarks/                benchmark scripts, results/ with CSVs and plots
 scripts/linux.sh           run as root on Linux or in the Lima VM
 tests/integration/         tests that load the real programs
