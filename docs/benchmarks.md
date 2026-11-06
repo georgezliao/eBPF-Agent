@@ -30,11 +30,12 @@ scripts/linux.sh benchmarks/overhead.sh  > benchmarks/results/overhead_quiet.csv
 scripts/linux.sh env RATE=0 benchmarks/probe_cost.sh
 scripts/linux.sh benchmarks/probe_cost.sh
 benchmarks/ab.sh <older-ref>             > benchmarks/results/ab.csv
+scripts/linux.sh benchmarks/paths.sh     > benchmarks/results/paths.csv
 scripts/linux.sh benchmarks/ringsweep.sh > benchmarks/results/ringsweep.csv
 python3 benchmarks/plot.py benchmarks/results
 ```
 
-`probe_cost.sh` prints one run, so the committed `probe_cost_quiet.csv` is five unthrottled runs and three at 500k with a `load` column added. `probe_cost_hooks_ab_quiet.csv` came from the same loop that `ab.sh` now wraps, with longer build names.
+`paths.sh` compares against `bin/tracelens-old` if it exists. On a machine other work is using, prefix a command with `benchmarks/quiet.sh`, which only keeps output from a run where the load stayed low. `probe_cost.sh` prints one run, so the committed `probe_cost_quiet.csv` is five unthrottled runs and three at 500k with a `load` column added. `probe_cost_hooks_ab_quiet.csv` came from the same loop that `ab.sh` now wraps, with longer build names.
 
 ## Results
 
@@ -82,14 +83,47 @@ What this shows:
 
 - **BPF time explains most of the throughput loss.** At the median, each of the two threads spends about 162 ns per read at baseline, 273 ns aggregated and 448 ns raw. That adds 111 and 286 ns, against 105 and 278 ns measured inside the programs. The match is rough: baseline varied by about 9% between runs, the BPF numbers come from separate runs with stats on, and tracepoint dispatch outside the programs should cost something too.
 - **Aggregated mode costs the agent essentially nothing.** Reading the stats map once a second is a few hundred map entries however many syscalls happened.
-- **Raw mode's BPF cost per read is nearly four times higher at 500k than unthrottled.** There are only 2.38 program runs per read, so the cost isn't a program firing on every event. Waking the consumer on some submits is one candidate, which would also fit its agent CPU staying near 25% at 100k reads/s. Neither has been tested.
+- **Raw mode's BPF cost per read is nearly four times higher at 500k than unthrottled**, and waking the consumer is why. See [below](#why-raw-mode-costs-more-when-paced).
 - **Aggregation's cost doesn't change when paced**, at least with this spinning workload. An earlier run with a sleeping `loadgen` measured it four times slower, and repeats on a busy host didn't reproduce that. The sleeping condition hasn't been rerun on a quiet host.
 - **At 250k and above, raw mode's median response p99 is 8–11 µs against 0.7–2.6 µs for the other two.** Baseline and aggregated can't be separated from three runs.
 - **The 100k row can't be used to compare modes.** Two baseline runs, one aggregated run and two raw runs hit stalls of up to 18 ms. 100k is also always the first rate in `overhead.sh`, and the worst values are in its first two repetitions, so this may be warm-up and not the rate.
 
 ### Cost of the newer hooks
 
-A build from before response, off-CPU and retransmit tracking was alternated with the current one five times ([`probe_cost_hooks_ab_quiet.csv`](../benchmarks/results/probe_cost_hooks_ab_quiet.csv)). Aggregated took 53 ns per program run in all five older runs and 53–55 ns in the newer ones. Raw took 135–138 ns and 135–137 ns. That covers `read` only: the workload doesn't exercise the `write`, TCP or sleep paths.
+A build from before response, off-CPU and retransmit tracking was alternated with the current one five times ([`probe_cost_hooks_ab_quiet.csv`](../benchmarks/results/probe_cost_hooks_ab_quiet.csv)). Aggregated took 53 ns per program run in all five older runs and 53–55 ns in the newer ones. Raw took 135–138 ns and 135–137 ns.
+
+That only covers `read`. For the other paths, `benchmarks/paths.sh` runs each `loadgen` op unthrottled on two threads, under `quiet.sh` ([`paths.csv`](../benchmarks/results/paths.csv)). Medians of three runs. Each batch of an op's four modes had to start and end with the host's load average under 5: 18 batches were kept and 3 thrown out. "Previous" is the build from before those hooks (`4e204c7~1`), and `offcpu` follows the load process with every hook attached.
+
+| op | what it does | baseline | previous | current | offcpu | added per op, current |
+| --- | --- | --- | --- | --- | --- | --- |
+| read | `read` `/dev/zero` | 11.60M | 7.13M | 6.75M | 7.58M | 124 ns |
+| write | `write` `/dev/null` | 12.84M | 7.52M | 7.49M | 7.56M | 111 ns |
+| eagain | `read` (EAGAIN), `write`, `read` on a pipe | 3.72M | 2.20M | 2.22M | 2.30M | 362 ns |
+| openclose | `open`, `close` `/dev/null` | 2.08M | 1.78M | 1.84M | 1.77M | 126 ns |
+| pingpong | byte through two blocking pipes to a partner thread | 82.7k | 74.9k | 75.5k | 95.7k | 2.3 µs |
+| tcp | 1-byte echo over loopback | 53.1k | 46.6k | 46.6k | 46.1k | 5.3 µs |
+
+Values are ops/s. Previous and current are within run-to-run spread on every path, so there's no measured cost to the newer hooks. `read` had one low run in each traced mode (5.1–5.5M) and its medians are the least reliable.
+
+`offcpu` adds stacks to each sleep, and it costs little on `tcp` (5.8 µs against 5.3 µs). On `pingpong` it made the workload faster than no tracing at all, in all three runs. A guess is the idle-vCPU effect below, since `pingpong` sleeps constantly, but that hasn't been tested. `offcpu` did capture during it: 198,021 sleeps in a 3-second check.
+
+### Why raw mode costs more when paced
+
+Per-program stats (`bpftool prog show` with stats on, one 5-second run each) put the extra cost in `exit_read`, which is where the event is submitted:
+
+| load | `exit_read` ns per run | `enter_read` ns per run |
+| --- | --- | --- |
+| unthrottled | 218 | 51 |
+| 500k reads/s | 858 | 58 |
+
+An experimental build, not in this repo, submitted events with `BPF_RB_NO_WAKEUP` and had the consumer poll every 1 ms. Alternating it with the normal build three times at 500k reads/s ([`wakeup_experiment.csv`](../benchmarks/results/wakeup_experiment.csv)):
+
+| build | BPF ns per read |
+| --- | --- |
+| normal | 991, 1042, 1056 |
+| no wakeup | 202, 262, 279 |
+
+That's back to the unthrottled cost, so the wakeup accounts for the difference. Unthrottled, the consumer is rarely asleep and rarely needs waking. The agent's CPU and the delay before events arrive weren't measured for that build, and wakeups may cost more in a VM than on bare metal.
 
 ## Host load changes everything
 

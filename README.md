@@ -1,31 +1,37 @@
 # TraceLens
 
-TraceLens is a Linux eBPF tool that shows, per process, how long syscalls take and how long threads wait for a CPU. It traces `read`, `write`, `openat`, `connect`, `fsync`/`fdatasync`, run-queue delay, how long non-blocking reads wait for data, and TCP retransmits. It keeps per-process latency histograms inside the kernel and only streams individual calls to userspace for one process at a time, when asked or when a latency threshold trips. For one process it can also show which kernel stacks its threads slept in.
+TraceLens is a Linux eBPF tool that shows, per process, how long syscalls take and how long threads wait for a CPU. It traces `read`, `write`, `openat`, `connect`, `fsync`/`fdatasync`, run-queue delay, how long non-blocking reads wait for data, and TCP retransmits. It keeps per-process latency histograms inside the kernel and only streams individual calls to userspace for one process at a time, when asked or when a latency threshold trips. For one process it can also show which kernel and user stacks its threads slept in.
 
 It's written in Go and C with [cilium/ebpf](https://github.com/cilium/ebpf) and `bpf2go`. The output below is from the [demo](docs/demo.md), where a client's requests to a small service get slow for three different reasons. The columns are trimmed from `tracelens top`:
 
 ```
                           FSYNC p99  RESP p99  RETRANS/s
-healthy      store            4.2ms   134.2ms        0.0
-             client               -    16.8ms        0.0
-slow service store            4.2ms    16.8ms        0.0
+healthy      store            4.2ms    67.1ms        0.0
+             client               -    33.6ms        0.0
+slow service store            4.2ms     8.4ms        0.0
              client               -    67.1ms        0.0
-packet loss  store            4.2ms   536.9ms       13.7
-             client               -   536.9ms       26.7
-busy disk    store           67.1ms     4.2ms        0.0
-             client               -   268.4ms        0.3
+packet loss  store            4.2ms   268.4ms       11.0
+             client               -   268.4ms       26.3
+busy disk    store           33.6ms    67.1ms        0.0
+             client               -   536.9ms        1.7
 ```
 
-The client's response time rises every time, and the other columns say why. A slow service leaves fsync and retransmits alone, packet loss shows up as retransmits, and only the busy disk moves fsync. (The store's `RESP` is the client's pause between requests, not the store's speed.) `offcpu` then shows what the slow fsyncs slept on:
+The client's response time rises every time, and the other columns say why. A slow service leaves fsync and retransmits alone, packet loss shows up as retransmits, and only the busy disk moves fsync. (The store's `RESP` is the client's pause between requests, not the store's speed.) `offcpu` then shows what the slow fsyncs slept on, kernel stack first, then the user stack that called it:
 
 ```
-$ tracelens offcpu -pid 61533 -duration 3s -n 1 -match ext4_sync_file
-2.205s total  546 sleeps  avg 4ms  max 111.1ms
+$ tracelens offcpu -pid 66367 -duration 3s -n 1 -match ext4_sync_file
+1.035s total  602 sleeps  0 still asleep  max 210.3ms
   schedule
   jbd2_log_wait_commit
   jbd2_complete_transaction
   ext4_fc_commit
   ext4_sync_file
+  ...
+  --
+  syscall.Syscall
+  syscall.Fdatasync
+  main.main.func1
+  net/http.HandlerFunc.ServeHTTP
   ...
 ```
 
@@ -41,7 +47,7 @@ tracelens agent [-listen :9090] [-interval 1s]
 
 - **`top`** prints syscall rates, error rates and p99 per process every interval, sorted by syscall rate.
 - **`trace`** follows one process for a fixed time and reports exact p50/p99/max per op, the longest calls, and how many events were dropped. `-min` filters short calls in the kernel; `-out` writes every call as a JSON line.
-- **`offcpu`** groups one process's sleeps by kernel stack and prints the stacks with the most time asleep. `-match` keeps stacks with a frame containing that name, since Go's idle threads otherwise fill the list. This is how to find out why a thread was waiting: `balance_dirty_pages` under a slow `write`, `ep_poll` for an idle Go runtime.
+- **`offcpu`** groups one process's sleeps by kernel and user stack and prints the stacks with the most time asleep. `-match` keeps stacks with a frame containing that name, since Go's idle threads otherwise fill the list. This is how to find out why a thread was waiting: `balance_dirty_pages` under a slow `write`, `ep_poll` for an idle Go runtime.
 - **`agent`** serves Prometheus metrics at `/metrics`: per-op call, error and byte counters, latency histograms, run-queue delay, read wait and response histograms, TCP retransmits, and drop counters. Labels are per op only, with no PID label, so the number of series stays fixed. With `-trigger`, it captures whichever process's interval p99 for `-trigger-op` reaches the threshold, using the same code as `trace`, and writes the capture to `-dir`.
 
 Errors exclude EAGAIN and EINPROGRESS, which non-blocking I/O returns as a normal step. Read wait (`readwait`, `RWAIT`) is the time from a `read` returning EAGAIN until the next `read` on the same fd returns; for Go sockets and pipes, which never block in `read`, it's the main place their waits show up. Response (`response`, `RESP`) is the part of that wait after the last `write` on the fd, so on a keep-alive connection the client sees the server's response time without the idle gap before the request.
@@ -98,7 +104,7 @@ Measured in a 4-vCPU Lima VM on an M4 MacBook Air with a worst-case workload: ba
 
 At 1M reads/s, the workload's response p99 measured from each call's scheduled start was 2.6 µs with no tracing, 2.1 µs with aggregation and 7.9 µs with every event sent to userspace.
 
-For syscalls that take microseconds or more, the per-call cost is a much smaller fraction. These numbers depend heavily on host load: with the Mac's load average around 28, the same tests gave very different results, so [docs/benchmarks.md](docs/benchmarks.md) records the conditions for each run.
+For syscalls that take microseconds or more, the per-call cost is a much smaller fraction: about 14% on a 38 µs TCP loopback round trip. `-export-all` costs about four times more per read at paced rates than unthrottled, because waking the consumer is expensive in this VM. These numbers depend heavily on host load: with the Mac's load average around 28, the same tests gave very different results, so [docs/benchmarks.md](docs/benchmarks.md) records the conditions for each run.
 
 ## Limitations
 
@@ -118,7 +124,7 @@ The full list is in [docs/limitations.md](docs/limitations.md). The ones most li
 
 None of these are started.
 
-- **User stacks in `offcpu`.** It only captures kernel stacks, which say what a thread slept in but not which code path called it. Go has frame pointers, so `BPF_F_USER_STACK` should work, but the addresses need symbolizing against the binary.
+- **Batched ring buffer wakeups.** Waking the consumer is most of the per-event cost at moderate rates. Submitting with `BPF_RB_NO_WAKEUP` and polling took raw mode from about 1040 to 260 ns per read at 500k reads/s in an experiment, and `trace` and triggered captures use the same path. Its effect on consumer CPU and capture latency hasn't been measured.
 - **Writes blocked on a full socket buffer.** `write` returning EAGAIN could be timed the same way as read wait.
 - **`recv`, `recvfrom` and `recvmsg`.** Read wait only sees `read(2)`, so programs that use these don't get it.
 - **Per-CPU maps at high core counts.** Each stats value is 352 bytes per CPU, so a shared hash with atomics may become the better trade at some core count. Finding where needs a machine with many cores.

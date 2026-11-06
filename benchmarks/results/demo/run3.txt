@@ -1,27 +1,27 @@
 == healthy ==
     PID                     COMM  READ/s  WRITE/s  OPEN/s  CONN/s  FSYNC/s  ERR/s  READ p99  WRITE p99  FSYNC p99  RWAIT p99  RESP p99  RUNQ p99  RETRANS/s
-  61750                    store    1814      400       0       0      200    0.0      33µs      262µs      4.2ms    134.2ms   134.2ms     524µs        0.0
-  61751                   client     483      484       0       0        0    0.0      33µs      131µs          -    134.2ms    16.8ms     524µs        0.0
+  66367                    store    1815      402       0       0      200    0.0      66µs      262µs      4.2ms     67.1ms    67.1ms     524µs        0.0
+  66368                   client     475      476       0       0        0    0.0      66µs      262µs          -     67.1ms    33.6ms       1ms        0.0
 
 == fault 1: store takes 30 ms longer per request ==
     PID                     COMM  READ/s  WRITE/s  OPEN/s  CONN/s  FSYNC/s  ERR/s  READ p99  WRITE p99  FSYNC p99  RWAIT p99  RESP p99  RUNQ p99  RETRANS/s
-  61750                    store    1841      430       0       0      200    0.0      33µs      262µs      4.2ms     67.1ms    16.8ms     524µs        0.0
-  61751                   client     457      458       0       0        0    0.0      33µs      131µs          -     67.1ms    67.1ms     524µs        0.0
+  66367                    store    1839      427       0       0      200    0.0      66µs      524µs      4.2ms     67.1ms     8.4ms     524µs        0.0
+  66368                   client     440      441       0       0        0    0.0      33µs      131µs          -     67.1ms    67.1ms     524µs        0.0
 
 == fault 2: loopback drops 5% of packets ==
-    PID               COMM  READ/s  WRITE/s  OPEN/s  CONN/s  FSYNC/s  ERR/s  READ p99  WRITE p99  FSYNC p99  RWAIT p99  RESP p99  RUNQ p99  RETRANS/s
-  61750              store    1798      398       0       0      198    0.0      66µs      262µs      8.4ms    268.4ms   268.4ms     262µs       12.0
-  61751             client     444      446       0       0        0    0.0      33µs      262µs          -    536.9ms   268.4ms     524µs       24.0
+    PID                     COMM  READ/s  WRITE/s  OPEN/s  CONN/s  FSYNC/s  ERR/s  READ p99  WRITE p99  FSYNC p99  RWAIT p99  RESP p99  RUNQ p99  RETRANS/s
+  66367                    store    1804      402       0       0      200    0.0      66µs      262µs      4.2ms    268.4ms   268.4ms     262µs       11.0
+  66368                   client     448      447       0       0        0    0.0      66µs      262µs          -    536.9ms   268.4ms     524µs       26.3
 
 == fault 3: 3 GB buffered write to the same disk ==
     PID                     COMM  READ/s  WRITE/s  OPEN/s  CONN/s  FSYNC/s  ERR/s  READ p99  WRITE p99  FSYNC p99  RWAIT p99  RESP p99  RUNQ p99  RETRANS/s
-  61750                    store    1818      403       0       0      201    0.0      66µs        1ms     33.6ms    536.9ms   134.2ms       1ms        0.0
-  61751                   client     455      453       0       0        0    0.0      33µs      131µs          -    536.9ms   536.9ms       1ms        0.0
+  66367                    store    1823      405       0       0      202    0.0      66µs      524µs     33.6ms    536.9ms    67.1ms       1ms        0.0
+  66368                   client     471      467       0       0        0    0.0      33µs      262µs          -    536.9ms   536.9ms       1ms        1.7
 
 == store's fdatasync sleeps during fault 3: tracelens offcpu ==
-2.01s asleep across all threads in 3.003s, 3 distinct stacks
+1.139s asleep across all threads in 3.004s, 2 distinct stacks
 
-1.826s total  600 sleeps  avg 3ms  max 258.7ms
+1.035s total  602 sleeps  0 still asleep  max 210.3ms
   schedule
   jbd2_log_wait_commit
   jbd2_complete_transaction
@@ -35,60 +35,71 @@
   do_el0_svc
   el0_svc
   ... 2 more
+  --
+  internal/runtime/syscall/linux.Syscall6.abi0
+  syscall.Syscall
+  syscall.Fdatasync
+  main.main.func1
+  net/http.HandlerFunc.ServeHTTP
+  net/http.(*ServeMux).ServeHTTP
+  net/http.serverHandler.ServeHTTP
+  net/http.(*conn).serve
+  net/http.(*Server).Serve.gowrap3
+  runtime.goexit.abi0
 
 == client's own view (per-second request latency) ==
-11:19:41  requests 192  p50 7.751ms  p99 115.871ms
-11:19:42  requests 200  p50 7.772ms  p99 13.841ms
-11:19:43  requests 200  p50 8.315ms  p99 17.391ms
-11:19:44  requests 200  p50 8.622ms  p99 17.677ms
-11:19:45  requests 200  p50 5.85ms  p99 14.749ms
-11:19:46  requests 200  p50 8.571ms  p99 16.425ms
-11:19:47  requests 200  p50 9.058ms  p99 16.639ms
-11:19:48  requests 200  p50 7.885ms  p99 38.201ms
-11:19:49  requests 200  p50 36.724ms  p99 39.746ms
-11:19:50  requests 200  p50 36.825ms  p99 40.706ms
-11:19:51  requests 200  p50 36.245ms  p99 39.743ms
-11:19:52  requests 197  p50 37.204ms  p99 40.877ms
-11:19:53  requests 201  p50 37.075ms  p99 40.364ms
-11:19:54  requests 202  p50 35.923ms  p99 40.308ms
-11:19:55  requests 200  p50 7.861ms  p99 16.22ms
-11:19:56  requests 194  p50 8.045ms  p99 16.521ms
-11:19:57  requests 199  p50 7.754ms  p99 413.541ms
-11:19:58  requests 202  p50 6.721ms  p99 240.796ms
-11:19:59  requests 192  p50 78.393ms  p99 648.584ms
-11:20:00  requests 211  p50 8.41ms  p99 452.443ms
-11:20:01  requests 198  p50 9.027ms  p99 403.483ms
-11:20:02  requests 204  p50 8.809ms  p99 396.569ms
-11:20:03  requests 200  p50 8.167ms  p99 15.979ms
-11:20:04  requests 200  p50 7.947ms  p99 20.381ms
-11:20:05  requests 200  p50 18.195ms  p99 56.91ms
-11:20:06  requests 138  p50 18.088ms  p99 129.792ms
-11:20:07  requests 262  p50 464.206ms  p99 690.677ms
-11:20:08  requests 200  p50 10.719ms  p99 26.766ms
-11:20:09  requests 200  p50 6.689ms  p99 16.055ms
-11:20:10  requests 200  p50 7.751ms  p99 15.832ms
-11:20:11  requests 200  p50 8.002ms  p99 18.167ms
+14:47:47  requests 200  p50 9.07ms  p99 17.763ms
+14:47:48  requests 200  p50 9.704ms  p99 21.66ms
+14:47:49  requests 200  p50 11.044ms  p99 27.317ms
+14:47:50  requests 200  p50 10.479ms  p99 17.591ms
+14:47:51  requests 200  p50 8.685ms  p99 22.495ms
+14:47:52  requests 200  p50 10.488ms  p99 26.053ms
+14:47:53  requests 200  p50 9.788ms  p99 18.012ms
+14:47:54  requests 200  p50 10.054ms  p99 39.003ms
+14:47:55  requests 198  p50 38.044ms  p99 43.759ms
+14:47:56  requests 202  p50 37.633ms  p99 44.766ms
+14:47:57  requests 195  p50 38.698ms  p99 49.019ms
+14:47:58  requests 203  p50 39.188ms  p99 44.661ms
+14:47:59  requests 199  p50 39.347ms  p99 53.462ms
+14:48:00  requests 203  p50 37.089ms  p99 43.381ms
+14:48:01  requests 200  p50 9.182ms  p99 15.758ms
+14:48:02  requests 200  p50 10.042ms  p99 25.683ms
+14:48:03  requests 194  p50 9.797ms  p99 248.516ms
+14:48:04  requests 200  p50 10.442ms  p99 490.822ms
+14:48:05  requests 183  p50 10.868ms  p99 478.679ms
+14:48:06  requests 202  p50 10.091ms  p99 894.229ms
+14:48:07  requests 213  p50 18.346ms  p99 449.533ms
+14:48:08  requests 208  p50 9.494ms  p99 242.185ms
+14:48:09  requests 200  p50 10.101ms  p99 18.04ms
+14:48:10  requests 200  p50 9.193ms  p99 29.482ms
+14:48:11  requests 166  p50 66.379ms  p99 270.594ms
+14:48:12  requests 234  p50 172.301ms  p99 549.995ms
+14:48:13  requests 200  p50 10.092ms  p99 22.237ms
+14:48:14  requests 200  p50 10.46ms  p99 22.865ms
+14:48:15  requests 200  p50 8.855ms  p99 22.667ms
+14:48:16  requests 200  p50 10.557ms  p99 79.566ms
+14:48:17  requests 185  p50 9.014ms  p99 16.797ms
 
 == agent log (triggered capture) ==
-2026/11/06 11:19:41 serving metrics on 127.0.0.1:9104/metrics
-2026/11/06 11:20:05 pid 61750 (store): fsync p99 33.6ms >= 20ms, capturing 3s to /tmp/tmp.ZTk4baSoVX/tracelens-61750-20261106-112005.jsonl
+2026/11/06 14:47:47 serving metrics on 127.0.0.1:9104/metrics
+2026/11/06 14:48:11 pid 66367 (store): fsync p99 134.2ms >= 20ms, capturing 3s to /tmp/tmp.t0mdgum1NO/tracelens-66367-20261106-144811.jsonl
         OP  CALLS  ERRORS     p50      p99      MAX
-      read   5442       0     2µs     31µs    905µs
-     write   1201       0    43µs    443µs    1.3ms
-     fsync    600       0   1.3ms   25.8ms  263.2ms
-      runq   7095       0     6µs    425µs    3.4ms
-  readwait    636       0  36.3ms  493.4ms  640.3ms
-  response    600       0   3.5ms   73.6ms  114.3ms
+      read   5796       0     2µs     31µs    423µs
+     write   1278       0    51µs    265µs    5.6ms
+     fsync    638       0   927µs    5.4ms  210.7ms
+      runq   7934       0     7µs    492µs    2.2ms
+  readwait    697       0  39.2ms  296.4ms  488.7ms
+  response    637       0  31.5ms   41.1ms   43.5ms
 events lost: 0
 
 longest syscalls:
-  263.2ms  tid 61823  fsync  ret 0
-  242.8ms  tid 61759  fsync  ret 0
-  228.2ms  tid 61765  fsync  ret 0
-  128.5ms  tid 61759  fsync  ret 0
-  66.2ms   tid 61762  fsync  ret 0
-  27ms     tid 61765  fsync  ret 0
-  25.8ms   tid 61762  fsync  ret 0
-  23.7ms   tid 61765  fsync  ret 0
-  22.2ms   tid 61823  fsync  ret 0
-  19ms     tid 61765  fsync  ret 0
+  210.7ms  tid 66372  fsync  ret 0
+  192.2ms  tid 66378  fsync  ret 0
+  82.7ms   tid 66372  fsync  ret 0
+  19.6ms   tid 66367  fsync  ret 0
+  11.2ms   tid 66367  fsync  ret 0
+  7.5ms    tid 66367  fsync  ret 0
+  5.6ms    tid 66434  write  ret 32768
+  5.4ms    tid 66367  fsync  ret 0
+  5.2ms    tid 66378  fsync  ret 0
+  5ms      tid 66367  fsync  ret 0

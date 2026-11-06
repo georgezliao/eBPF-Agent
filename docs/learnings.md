@@ -47,7 +47,7 @@ My mental model was that aggregating in BPF maps is cheap and shipping events to
 
 But the cost per syscall, which the traced program pays, was more complicated. With `kernel.bpf_stats_enabled` on and the workload running flat out, the aggregation path took about 60 ns per program run versus 117 ns for the ring buffer path. When the workload was paced to 500k reads/s, the aggregation path went up to 248 ns per run while the ring buffer path stayed at 123 ns. Same code, four times slower. My guess was cache: with 1 ms pauses between bursts, the per-CPU stats value and its hash bucket go cold, while the ring buffer keeps getting touched by the consumer on another CPU.
 
-That guess sat in the docs for a while, with a plan item to check it on bare metal with `perf stat`. Then I reran the paced benchmark for an unrelated reason and got 85 ns. So I ran it nine more times. The aggregated path went anywhere from 79 to 174 ns per run, and the raw path from 210 to 341 ns, so raw was the slower one in every run. The 248 was one unlucky run, and I'd built a cache theory on top of a single sample. Lesson for me: run anything surprising at least three times before explaining it. Later, on a quiet host and with a load generator that spins instead of sleeping, aggregation took 55 ns per run paced versus 53 ns flat out. That doesn't fully kill the cache idea, because spinning removes the pauses it depended on, and I never reran the sleeping version on a quiet host. But I no longer have any evidence for it. Raw is the mode that gets worse when paced, nearly four times the BPF time per read. I thought that was waking the consumer for every event, but there are only 2.38 program runs per read, so if it's wakeups it's only some of them. I haven't tested it.
+That guess sat in the docs for a while, with a plan item to check it on bare metal with `perf stat`. Then I reran the paced benchmark for an unrelated reason and got 85 ns. So I ran it nine more times. The aggregated path went anywhere from 79 to 174 ns per run, and the raw path from 210 to 341 ns, so raw was the slower one in every run. The 248 was one unlucky run, and I'd built a cache theory on top of a single sample. Lesson for me: run anything surprising at least three times before explaining it. Later, on a quiet host and with a load generator that spins instead of sleeping, aggregation took 55 ns per run paced versus 53 ns flat out. That doesn't fully kill the cache idea, because spinning removes the pauses it depended on, and I never reran the sleeping version on a quiet host. But I no longer have any evidence for it. Raw is the mode that gets worse when paced, nearly four times the BPF time per read, which I come back to below.
 
 ## Idle CPUs make syscalls slower, which wrecked my latency numbers
 
@@ -100,6 +100,22 @@ The first demo only had one fault, so I rebuilt it as a client calling a service
 A few things went wrong getting there. My first slow-service fault was 40 ms, and with 4 workers on a 20 ms schedule the service just couldn't keep up, so latency climbed to 3 s and it looked like a totally different problem. At 10 ms it was too small to see, because `top`'s p99 is log2 buckets and 17 to 34 ms is one step that healthy runs land on anyway. That one bugs me a little, since a real 10 ms regression could hide there. And `top` caught a bug in my own demo: `CONN/s` was 73 on a client that was supposed to use keep-alive, because Go only keeps two idle connections per host by default and I had four workers.
 
 `offcpu` was useless at first on a Go program, since the top of the list is always idle threads in `futex` and `ep_poll`. Filtering by a frame name fixed that, and then the store's slow fsyncs turned out to be waiting in `jbd2_log_wait_commit`, an ext4 journal commit, in all three runs. So that's one more layer than "fsync is slow", though it still doesn't say who else was filling the journal.
+
+Adding user stacks made this feel a lot more real. The same sleep now continues down through `syscall.Fdatasync` to `main.main.func1` and `net/http`, so one stack goes all the way from the ext4 journal to the HTTP handler. Go made that easy, since it keeps frame pointers and a symbol table.
+
+## The expensive part of the ring buffer was the doorbell
+
+I'd been wondering why raw mode cost nearly four times more per read at 500k reads/s than flat out, when you'd think a quieter system would be cheaper. Per-program stats put it all in `exit_read`, 858 ns per run against 218. So I built a version that submits with `BPF_RB_NO_WAKEUP` and has the consumer poll every millisecond instead, and it went from about 1040 ns per read to about 260.
+
+So the expensive part isn't writing the event, it's waking the reader. Flat out, the consumer is already awake and draining, so nobody needs waking. At a moderate rate it keeps falling asleep and every wakeup costs something. That's a little backwards from what I'd assumed, that a busy system pays more. It might be worse in a VM too, I haven't tried bare metal. And I only measured the BPF side, so I don't know what polling costs the agent.
+
+## Benchmarking next to my own other work
+
+The first attempt at measuring the other hook paths was garbage. Load went from 4 to 44 partway through because another project of mine was running on the same laptop, and baseline `read` ranged from 5.4M to 11.9M. One row said tracing made things 11 µs faster. I'd only checked the load at the start.
+
+So now `benchmarks/quiet.sh` checks before and after each batch and throws the batch away if the load went up. That got 18 clean batches and 3 discards, and the numbers lined up. The new hooks made no measurable difference on any path: `write`, EAGAIN, `close`, sleeps or TCP.
+
+One thing I can't explain yet: the pipe ping-pong workload got faster with `offcpu` attached, 96k ops/s against 83k with no tracing, in all three runs. I'd guess it's the same thing as the idle vCPU effect, since that workload sleeps constantly, but I haven't tested it.
 
 ## Smaller things
 
