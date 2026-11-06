@@ -95,27 +95,27 @@ I'd dropped TCP retransmits because the tracepoint mostly fires in softirq, wher
 
 ## The demo that finally used everything together
 
-The first demo only had one fault, so I rebuilt it as a client calling a service, with three different things going wrong. The nice part is that the client gets slower every time and you can't tell why from its side, but in `top` each fault moves a different column: `RESP` alone, then `RETRANS/s`, then `FSYNC p99`. It did that in all three runs, which I honestly wasn't sure about.
+The first demo only had one fault, so I rebuilt it as a client calling a service, with three different things going wrong. The nice part is that the client gets slower every time and you can't tell why from its side, but in `top` each fault moves a different column: `RESP` alone, then `RETRANS/s`, then `FSYNC p99`. It did that in all three runs.
 
-A few things went wrong getting there. My first slow-service fault was 40 ms, and with 4 workers on a 20 ms schedule the service just couldn't keep up, so latency climbed to 3 s and it looked like a totally different problem. At 10 ms it was too small to see, because `top`'s p99 is log2 buckets and 17 to 34 ms is one step that healthy runs land on anyway. That one bugs me a little, since a real 10 ms regression could hide there. And `top` caught a bug in my own demo: `CONN/s` was 73 on a client that was supposed to use keep-alive, because Go only keeps two idle connections per host by default and I had four workers.
+A few things went wrong getting there. My first slow-service fault was 40 ms, and with 4 workers on a 20 ms schedule the service just couldn't keep up, so latency climbed to 3 s and it looked like a totally different problem. At 10 ms it was too small to see, because `top`'s p99 is log2 buckets and 17 to 34 ms is one step that healthy runs land on anyway. So a real 10 ms regression could hide there. And `top` caught a bug in my own demo: `CONN/s` was 73 on a client that was supposed to use keep-alive, because Go only keeps two idle connections per host by default and I had four workers.
 
 `offcpu` was useless at first on a Go program, since the top of the list is always idle threads in `futex` and `ep_poll`. Filtering by a frame name fixed that, and then the store's slow fsyncs turned out to be waiting in `jbd2_log_wait_commit`, an ext4 journal commit, in all three runs. So that's one more layer than "fsync is slow", though it still doesn't say who else was filling the journal.
 
-Adding user stacks made this feel a lot more real. The same sleep now continues down through `syscall.Fdatasync` to `main.main.func1` and `net/http`, so one stack goes all the way from the ext4 journal to the HTTP handler. Go made that easy, since it keeps frame pointers and a symbol table.
+Then I added user stacks. The same sleep now continues down through `syscall.Fdatasync` to `main.main.func1` and `net/http`, so one stack goes all the way from the ext4 journal to the HTTP handler. Go made that easy, since it keeps frame pointers and a symbol table.
 
 ## The expensive part of the ring buffer was the doorbell
 
-I'd been wondering why raw mode cost nearly four times more per read at 500k reads/s than flat out, when you'd think a quieter system would be cheaper. Per-program stats put it all in `exit_read`, 858 ns per run against 218. So I built a version that submits with `BPF_RB_NO_WAKEUP` and has the consumer poll every millisecond instead, and it went from about 1040 ns per read to about 260.
+Raw mode cost nearly four times more per read at 500k reads/s than flat out in the Lima VM, when you'd think a quieter system would be cheaper. Per-program stats put it all in `exit_read`, 858 ns per run against 218. So I built a version that submits with `BPF_RB_NO_WAKEUP` and has the consumer poll every millisecond instead, and it went from about 1040 ns per read to about 260.
 
-So the expensive part isn't writing the event, it's waking the reader. Flat out, the consumer is already awake and draining, so nobody needs waking. At a moderate rate it keeps falling asleep and every wakeup costs something. That's a little backwards from what I'd assumed, that a busy system pays more. It might be worse in a VM too, I haven't tried bare metal. And I only measured the BPF side, so I don't know what polling costs the agent.
+So the expensive part isn't writing the event, it's waking the reader. My guess is that flat out, the consumer is already awake and draining, so nobody needs waking, and at a moderate rate it keeps falling asleep. That's a little backwards from what I'd assumed, that a busy system pays more. It might be worse in a VM too, I haven't tried bare metal. And I only measured the BPF side, so I don't know what polling costs the agent.
 
 ## Benchmarking next to my own other work
 
-The first attempt at measuring the other hook paths was garbage. Load went from 4 to 44 partway through because another project of mine was running on the same laptop, and baseline `read` ranged from 5.4M to 11.9M. One row said tracing made things 11 µs faster. I'd only checked the load at the start.
+The first attempt at measuring the other hook paths was garbage. Load went from 4 to 44 partway through because another project of mine was running on the same laptop, and baseline `read` ranged from 5.4M to 11.9M. One row said tracing made things 11 µs faster. I'd only checked the load at the start, and I deleted that CSV, so those are just the numbers I remember from reading it.
 
-So now `benchmarks/quiet.sh` checks before and after each batch and throws the batch away if the load went up. That got 18 clean batches and 3 discards, and the numbers lined up. The new hooks made no measurable difference on any path: `write`, EAGAIN, `close`, sleeps or TCP.
+So now `benchmarks/quiet.sh` checks before and after each batch and throws the batch away if the load went up, and the numbers lined up. The new hooks made no clear difference on `write`, EAGAIN, `close` or sleeps. TCP was the exception, about 2% slower.
 
-One thing I can't explain yet: the pipe ping-pong workload got faster with `offcpu` attached, 96k ops/s against 83k with no tracing, in all three runs. I'd guess it's the same thing as the idle vCPU effect, since that workload sleeps constantly, but I haven't tested it.
+There was one more trap. The pipe ping-pong workload came out faster with `offcpu` attached, 96k ops/s against 83k with no tracing, in all three runs. I was ready to blame the idle vCPU effect again. Then the reviewer noticed `offcpu` was attaching after the load had already started, so part of every run wasn't traced at all. Once the load waited for it to attach, ping-pong was 75k, the same as the agent. That alone doesn't explain beating the untraced baseline, so I don't really know what that first result was, but it's gone. Repeating it three times didn't help here, because all three had the same bug.
 
 ## Smaller things
 

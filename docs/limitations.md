@@ -46,7 +46,7 @@ File I/O (regular files are always blocking), `fsync` and run-queue delay show u
 - `read_wait` holds 16384 pending (process, fd) pairs system-wide, and an idle connection with a read pending holds one until data arrives. Past that, LRU eviction drops the oldest waits without any counter.
 - `sock_owner` holds 65536 sockets, also LRU. An evicted socket's retransmits go to PID 0 until it sends again.
 - User stacks need frame pointers, which Go has and most C builds don't, so those can come back short or empty. Only the executable's own functions get names: shared libraries print as addresses, and so does everything in a stripped binary.
-- `stacks` holds 8192 stacks, but a stack whose hash collides with a stored one is dropped, which starts around 100 distinct stacks. Those sleeps are counted under one "stack not captured" entry. `offcpu` holds 4096 entries.
+- `kernel_stacks` and `user_stacks` hold 8192 stacks each, but a stack whose hash collides with a stored one is dropped, which starts around 100 distinct stacks per map. Those sleeps print as "stack not captured". `offcpu` holds 4096 pairs of stacks.
 - The ring buffer drops events when the consumer falls behind; the count is reported by `trace`, captures and `tracelens_events_dropped_total`. [benchmarks.md](benchmarks.md) shows where that starts.
 
 ## Kernel requirements

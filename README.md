@@ -104,7 +104,7 @@ Measured in a 4-vCPU Lima VM on an M4 MacBook Air with a worst-case workload: ba
 
 At 1M reads/s, the workload's response p99 measured from each call's scheduled start was 2.6 µs with no tracing, 2.1 µs with aggregation and 7.9 µs with every event sent to userspace.
 
-For syscalls that take microseconds or more, the per-call cost is a much smaller fraction: about 14% on a 38 µs TCP loopback round trip. `-export-all` costs about four times more per read at paced rates than unthrottled, because waking the consumer is expensive in this VM. These numbers depend heavily on host load: with the Mac's load average around 28, the same tests gave very different results, so [docs/benchmarks.md](docs/benchmarks.md) records the conditions for each run.
+For syscalls that take microseconds or more, the per-call cost is a much smaller fraction: about 6 µs on a 38 µs TCP loopback round trip, measured the same way. `-export-all` costs about four times more per read at paced rates than unthrottled, because waking the consumer is expensive in this VM. See [docs/benchmarks.md](docs/benchmarks.md). These numbers depend heavily on host load: with the Mac's load average around 28, the same tests gave very different results, so [docs/benchmarks.md](docs/benchmarks.md) records the conditions for each run.
 
 ## Limitations
 
@@ -122,9 +122,9 @@ The full list is in [docs/limitations.md](docs/limitations.md). The ones most li
 
 ## Possible next steps
 
-None of these are started.
+Ideas that aren't built yet.
 
-- **Batched ring buffer wakeups.** Waking the consumer is most of the per-event cost at moderate rates. Submitting with `BPF_RB_NO_WAKEUP` and polling took raw mode from about 1040 to 260 ns per read at 500k reads/s in an experiment, and `trace` and triggered captures use the same path. Its effect on consumer CPU and capture latency hasn't been measured.
+- **Batched ring buffer wakeups.** Waking the consumer is most of the per-event cost at moderate rates. Submitting with `BPF_RB_NO_WAKEUP` and polling took raw mode from about 1040 to 260 ns per read at 500k reads/s in a throwaway experiment in the Lima VM, and `trace` and triggered captures use the same path. Its effect on consumer CPU and capture latency hasn't been measured.
 - **Writes blocked on a full socket buffer.** `write` returning EAGAIN could be timed the same way as read wait.
 - **`recv`, `recvfrom` and `recvmsg`.** Read wait only sees `read(2)`, so programs that use these don't get it.
 - **Per-CPU maps at high core counts.** Each stats value is 352 bytes per CPU, so a shared hash with atomics may become the better trade at some core count. Finding where needs a machine with many cores.

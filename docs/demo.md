@@ -39,14 +39,14 @@ The client's own p50 and p99 for the same run:
 | --- | --- | --- |
 | healthy | 9–11 ms | 18–27 ms |
 | fault 1 | 37–39 ms | 43–54 ms |
-| fault 2 | 9.5–18 ms | 243–894 ms |
+| fault 2 | 9.5–18 ms | 242–894 ms |
 | fault 3 | 66–172 ms | 271–550 ms |
 
 Reading the faults off `top`:
 
-- **Fault 1:** the client's `RESP` jumps and its p50 rises by the injected 30 ms. `FSYNC` doesn't move and there are no retransmits, so it's neither the disk nor the network. The time is inside the store, and `tracelens offcpu` on it would be the next step.
+- **Fault 1:** the client's `RESP` moves up one or two log2 buckets, which alone wouldn't mean much, but its own p50 rises by the injected 30 ms. `FSYNC` doesn't move and there are no retransmits, so it's neither the disk nor the network. The time is inside the store, and `tracelens offcpu` on it would be the next step.
 - **Fault 2:** `RETRANS/s` appears on both processes. The client's p50 barely moves and its p99 goes to hundreds of milliseconds, since only the requests that lost a packet wait for a retransmit. `RESP` shows that tail. Fsync doesn't move.
-- **Fault 3:** the store's `FSYNC p99` jumps. That's the only fault where it moves, and retransmits stay near zero (0 to 2.3/s across the runs).
+- **Fault 3:** the store's `FSYNC p99` jumps. That's the only fault where it moves, and retransmits stay near zero. They weren't exactly zero, 0 to 2.3/s across the runs, and 0.3/s in one healthy period; I don't know what caused those. The client reported no failed requests in a later run with failure counting added.
 
 Ignore the store's `RESP` column. It's the gap between the store's reply and the next request on that connection, so it measures the client's schedule, not the store's speed. [limitations.md](limitations.md) has more on why.
 
@@ -56,8 +56,6 @@ Ignore the store's `RESP` column. It's the gap between the store's reply and the
 
 ```
 $ tracelens offcpu -pid 66367 -duration 3s -n 1 -match ext4_sync_file
-1.139s asleep across all threads in 3.004s, 2 distinct stacks
-
 1.035s total  602 sleeps  0 still asleep  max 210.3ms
   schedule
   jbd2_log_wait_commit

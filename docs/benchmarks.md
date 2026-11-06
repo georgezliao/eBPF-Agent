@@ -30,12 +30,12 @@ scripts/linux.sh benchmarks/overhead.sh  > benchmarks/results/overhead_quiet.csv
 scripts/linux.sh env RATE=0 benchmarks/probe_cost.sh
 scripts/linux.sh benchmarks/probe_cost.sh
 benchmarks/ab.sh <older-ref>             > benchmarks/results/ab.csv
-scripts/linux.sh benchmarks/paths.sh     > benchmarks/results/paths.csv
+benchmarks/paths_quiet.sh                > benchmarks/results/paths.csv
 scripts/linux.sh benchmarks/ringsweep.sh > benchmarks/results/ringsweep.csv
 python3 benchmarks/plot.py benchmarks/results
 ```
 
-`paths.sh` compares against `bin/tracelens-old` if it exists. On a machine other work is using, prefix a command with `benchmarks/quiet.sh`, which only keeps output from a run where the load stayed low. `probe_cost.sh` prints one run, so the committed `probe_cost_quiet.csv` is five unthrottled runs and three at 500k with a `load` column added. `probe_cost_hooks_ab_quiet.csv` came from the same loop that `ab.sh` now wraps, with longer build names.
+`paths.sh` compares against `bin/tracelens-old` if it exists. On a machine other work is using, prefix a single-run command with `benchmarks/quiet.sh`, which only keeps output when the load stayed low; `paths_quiet.sh` does that per op. `probe_cost.sh` prints one run, so the committed `probe_cost_quiet.csv` is five unthrottled runs and three at 500k with a `load` column added. `probe_cost_hooks_ab_quiet.csv` came from the same loop that `ab.sh` now wraps, with longer build names.
 
 ## Results
 
@@ -92,20 +92,21 @@ What this shows:
 
 A build from before response, off-CPU and retransmit tracking was alternated with the current one five times ([`probe_cost_hooks_ab_quiet.csv`](../benchmarks/results/probe_cost_hooks_ab_quiet.csv)). Aggregated took 53 ns per program run in all five older runs and 53–55 ns in the newer ones. Raw took 135–138 ns and 135–137 ns.
 
-That only covers `read`. For the other paths, `benchmarks/paths.sh` runs each `loadgen` op unthrottled on two threads, under `quiet.sh` ([`paths.csv`](../benchmarks/results/paths.csv)). Medians of three runs. Each batch of an op's four modes had to start and end with the host's load average under 5: 18 batches were kept and 3 thrown out. "Previous" is the build from before those hooks (`4e204c7~1`), and `offcpu` follows the load process with every hook attached.
+That only covers `read`. For the other paths, `benchmarks/paths_quiet.sh` runs each `loadgen` op unthrottled on two threads ([`paths.csv`](../benchmarks/results/paths.csv)). Medians of three runs in the same Lima VM. Each batch of an op's four modes had to start and end with the host's load average under 5: 18 batches were kept and 1 thrown out. "Previous" is the build from before those hooks (`4e204c7~1`), and `offcpu` follows the load process, attaching before it starts, with every hook loaded.
 
 | op | what it does | baseline | previous | current | offcpu | added per op, current |
 | --- | --- | --- | --- | --- | --- | --- |
-| read | `read` `/dev/zero` | 11.60M | 7.13M | 6.75M | 7.58M | 124 ns |
-| write | `write` `/dev/null` | 12.84M | 7.52M | 7.49M | 7.56M | 111 ns |
-| eagain | `read` (EAGAIN), `write`, `read` on a pipe | 3.72M | 2.20M | 2.22M | 2.30M | 362 ns |
-| openclose | `open`, `close` `/dev/null` | 2.08M | 1.78M | 1.84M | 1.77M | 126 ns |
-| pingpong | byte through two blocking pipes to a partner thread | 82.7k | 74.9k | 75.5k | 95.7k | 2.3 µs |
-| tcp | 1-byte echo over loopback | 53.1k | 46.6k | 46.6k | 46.1k | 5.3 µs |
+| read | `read` `/dev/zero` | 12.21M | 7.27M | 7.22M | 6.72M | 113 ns |
+| write | `write` `/dev/null` | 12.69M | 7.57M | 7.33M | 6.98M | 115 ns |
+| eagain | `read` (EAGAIN), `write`, `read` on a pipe | 3.86M | 2.14M | 2.16M | 2.19M | 409 ns |
+| openclose | `open`, `close` `/dev/null` | 2.10M | 1.73M | 1.77M | 1.78M | 175 ns |
+| pingpong | byte through two blocking pipes to a partner thread | 80.9k | 75.4k | 74.6k | 75.3k | 2.1 µs |
+| tcp | 1-byte echo over loopback | 52.9k | 46.2k | 45.2k | 45.7k | 6.5 µs |
 
-Values are ops/s. Previous and current are within run-to-run spread on every path, so there's no measured cost to the newer hooks. `read` had one low run in each traced mode (5.1–5.5M) and its medians are the least reliable.
+Values are ops/s. "Added per op" is the time on each thread compared with baseline.
 
-`offcpu` adds stacks to each sleep, and it costs little on `tcp` (5.8 µs against 5.3 µs). On `pingpong` it made the workload faster than no tracing at all, in all three runs. A guess is the idle-vCPU effect below, since `pingpong` sleeps constantly, but that hasn't been tested. `offcpu` did capture during it: 198,021 sleeps in a 3-second check.
+- **Newer hooks:** `tcp` is the only path where previous and current don't overlap (46.1–46.5k against 45.2–45.8k), about 2%, or 1 µs per echo. That's a plausible cost for the `fentry` on `tcp_sendmsg`, though an earlier run of the same benchmark showed no gap. Elsewhere the difference is inside the spread, which is about 1–3% for `eagain` and `pingpong` and up to 18% for `openclose`, because one run was low. These runs can't rule out a cost smaller than that. For `read`, the A/B above is much tighter.
+- **`offcpu`:** it adds a stack walk per sleep, but `pingpong` and `tcp` medians didn't move beyond the spread. `read` and `write` don't sleep, and their lower medians come with one or two low runs each, so I wouldn't read much into them. It captured 472,580 sleeps in a [check run](../benchmarks/results/offcpu_pingpong_check.txt) of `pingpong`.
 
 ### Why raw mode costs more when paced
 
@@ -123,7 +124,7 @@ An experimental build, not in this repo, submitted events with `BPF_RB_NO_WAKEUP
 | normal | 991, 1042, 1056 |
 | no wakeup | 202, 262, 279 |
 
-That's back to the unthrottled cost, so the wakeup accounts for the difference. Unthrottled, the consumer is rarely asleep and rarely needs waking. The agent's CPU and the delay before events arrive weren't measured for that build, and wakeups may cost more in a VM than on bare metal.
+That's back to the unthrottled cost, so the wakeup accounts for the difference. Presumably the consumer is rarely asleep when unthrottled, so it rarely needs waking, but that wasn't measured. The agent's CPU and the delay before events arrive weren't measured for that build, and wakeups may cost more in a VM than on bare metal.
 
 ## Host load changes everything
 
