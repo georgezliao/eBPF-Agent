@@ -84,17 +84,17 @@ The integration tests in `tests/integration` drive known workloads (slow pipe re
 
 ## Overhead
 
-Measured in a 4-vCPU Lima VM on an M4 MacBook Air with a worst-case workload: back-to-back 1-byte reads from `/dev/zero`, about 200 ns each. Full method and caveats are in [docs/benchmarks.md](docs/benchmarks.md).
+Measured in a 4-vCPU Lima VM on an M4 MacBook Air with a worst-case workload: back-to-back 1-byte reads from `/dev/zero`, about 160 ns each. Throughput and CPU are medians of three 5-second runs, BPF time of five. Full method and caveats are in [docs/benchmarks.md](docs/benchmarks.md).
 
 | | reads/s, 2 threads unthrottled | agent CPU at 1M reads/s | BPF time per read, unthrottled (upper bound) |
 | --- | --- | --- | --- |
-| no tracing | 10.0M | | |
-| in-kernel aggregation (default) | 5.81M | ~0% | ≤120 ns |
-| every event to userspace (`-export-all`) | 4.18M, ~8.7M events dropped per 5 s run* | 30% of a core* | ≤234 ns |
+| no tracing | 12.3M | | |
+| in-kernel aggregation (default) | 7.32M | ~0% | ≤105 ns |
+| every event to userspace (`-export-all`) | 4.46M, about 3.5% of events dropped | 35% of a core | ≤278 ns |
 
-\* Measured with the original `binary.Read` decoder. After switching to offset-based decoding, unthrottled drops fell to 5-6% (about 3.8M events/s delivered). A later [open-loop rerun](docs/benchmarks.md#open-loop-rerun) measured 26% of a core at 1M reads/s and 68% unthrottled, on a busier host and with a different load generator. The BPF time column is from single runs on an older build; on that busier host, aggregated mode measured 171–292 ns per read.
+At 1M reads/s, the workload's response p99 measured from each call's scheduled start was 2.6 µs with no tracing, 2.1 µs with aggregation and 7.9 µs with every event sent to userspace.
 
-For syscalls that take microseconds or more, the per-call cost is a much smaller fraction. Latency comparisons at paced rates turned out to depend on how idle the VM was, so the writeup doesn't rely on them.
+For syscalls that take microseconds or more, the per-call cost is a much smaller fraction. These numbers depend heavily on host load: with the Mac's load average around 28, the same tests gave very different results, so [docs/benchmarks.md](docs/benchmarks.md) records the conditions for each run.
 
 ## Limitations
 

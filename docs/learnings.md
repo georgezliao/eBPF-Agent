@@ -47,7 +47,7 @@ My mental model was that aggregating in BPF maps is cheap and shipping events to
 
 But the cost per syscall, which the traced program pays, was more complicated. With `kernel.bpf_stats_enabled` on and the workload running flat out, the aggregation path took about 60 ns per program run versus 117 ns for the ring buffer path. When the workload was paced to 500k reads/s, the aggregation path went up to 248 ns per run while the ring buffer path stayed at 123 ns. Same code, four times slower. My guess was cache: with 1 ms pauses between bursts, the per-CPU stats value and its hash bucket go cold, while the ring buffer keeps getting touched by the consumer on another CPU.
 
-That guess sat in the docs for a while, with a plan item to check it on bare metal with `perf stat`. Then I reran the paced benchmark for an unrelated reason and got 85 ns. So I ran it nine more times. The aggregated path went anywhere from 79 to 174 ns per run, and the raw path from 210 to 341 ns, so raw was the slower one in every run. The 248 was one unlucky run, and I'd built a cache theory on top of a single sample. Lesson for me: run anything surprising at least three times before explaining it.
+That guess sat in the docs for a while, with a plan item to check it on bare metal with `perf stat`. Then I reran the paced benchmark for an unrelated reason and got 85 ns. So I ran it nine more times. The aggregated path went anywhere from 79 to 174 ns per run, and the raw path from 210 to 341 ns, so raw was the slower one in every run. The 248 was one unlucky run, and I'd built a cache theory on top of a single sample. Lesson for me: run anything surprising at least three times before explaining it. Later, on a quiet host and with the spinning load generator, aggregation took 55 ns per run paced versus 53 ns flat out, so that effect was never really there. Raw is the mode that gets worse when paced, about 430 ns per run. I'd guess that's the cost of waking the consumer for each event, but I haven't tested it.
 
 ## Idle CPUs make syscalls slower, which wrecked my latency numbers
 
@@ -67,9 +67,15 @@ Later I went back and benchmarked the consumer's two suspects separately. `binar
 
 `loadgen` turned out to have the problem Gil Tene calls coordinated omission. It timed each call from when the call started, so if the thread stalled for 5 ms, that showed up as one slow sample and the thousands of calls that should have run during those 5 ms just never counted. I changed it to a fixed schedule, where a call's response time is measured from when it was due.
 
-The difference is kind of ridiculous. At 1M reads/s with no tracing at all, service p99 was 0.7 µs and response p99 was 4 ms. I don't know what the stalls are, probably the VM or my laptop, but the old number was never going to show them. I also can't use this to rank the tracing modes, since the ranges overlap and at 500k the untraced baseline came out worse than aggregated.
+The difference was kind of ridiculous. At 1M reads/s with no tracing at all, service p99 was 0.7 µs and response p99 was 4 ms. I couldn't use that to rank the tracing modes, since the ranges overlap and at 500k the untraced baseline came out worse than aggregated.
 
 Then the unthrottled baseline came back as 5.3M reads/s instead of 10M, and for a moment that looked like a finding. It was my bug: the new loop read the clock on every call, and a clock read costs about as much as reading a byte from `/dev/zero`. After fixing that it was 8M, still not 10M, and aggregated cost looked like it had doubled. Three features had just gone in, so they were the obvious suspect. But the old build measured the same under the same conditions, and my Mac's load average was 28. After the 248 ns thing I'm glad I checked before writing that one down.
+
+The real answer came from rerunning everything with the Mac mostly idle, at a load average of about 3 instead of 28. Baseline went to 12.3M reads/s, higher than anything I'd measured. Aggregated cost was 53 or 54 ns per run in all five runs, where before it had bounced between 85 and 146. The 4 ms response p99 at 1M became 2.6 µs, so those stalls were mostly my laptop being busy, and response time was picking that up while service time sat at under a microsecond. That's the best argument for the new measurement I could've asked for, by accident.
+
+The numbers also finally check each other. Going from baseline to aggregated adds 111 ns per read to each thread, and the BPF programs account for 105 ns of it. Raw adds 286 ns, and they account for 277 ns. And the old-vs-new comparison settled too: 53 ns against 53–55 ns, so the new hooks don't noticeably touch the read path.
+
+I also wish I'd recorded host load from the start. Nothing else in this project moved the numbers as much, and for most of the early benchmarks I can't tell you what it was.
 
 ## Triggered capture sees the aftermath
 

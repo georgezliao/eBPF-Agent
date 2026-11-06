@@ -17,7 +17,7 @@ The workload is `bin/loadgen`: two OS threads issuing 1-byte `read` calls on `/d
 All numbers come from one machine, and none of them should be compared with numbers from anywhere else. Full metadata is in [`benchmarks/results/env.txt`](../benchmarks/results/env.txt).
 
 - Lima 2.2.1 VM (Apple Virtualization.framework), 4 vCPUs, 4 GiB, Ubuntu 24.04.5, kernel 6.8.0-142-generic, arm64
-- Host: M4 MacBook Air, macOS 26.0; power source and other host load not recorded
+- Host: M4 MacBook Air, macOS 26.0. Power source and host load weren't recorded for the earlier runs; [Current numbers](#current-numbers) and the open-loop rerun say what they were
 - No CPU pinning, no isolation, no frequency control: the VM can't do any of those
 
 Reproduce with:
@@ -27,8 +27,56 @@ make build
 scripts/linux.sh benchmarks/overhead.sh   > benchmarks/results/overhead.csv
 scripts/linux.sh benchmarks/ringsweep.sh  > benchmarks/results/ringsweep.csv
 scripts/linux.sh env RATE=0 benchmarks/probe_cost.sh > benchmarks/results/probe_cost_max.csv
+scripts/linux.sh benchmarks/overhead.sh   > benchmarks/results/overhead_quiet.csv
 python3 benchmarks/plot.py benchmarks/results
 ```
+
+## Current numbers
+
+This is the rerun to use. It has every hook loaded, the fast decoder and the open-loop `loadgen`, in the same Lima VM. The Mac's load average was 2.5–3.4 throughout, and it was on battery. Everything after this section is earlier work, kept because the corrections are part of the story. Those numbers aren't comparable with these.
+
+Medians of three 5-second runs ([`overhead_quiet.csv`](../benchmarks/results/overhead_quiet.csv)). Service p99 runs from call start to return, and response p99 from the call's scheduled time to return. Unthrottled, there's no schedule, so the two are the same.
+
+| target reads/s | mode | achieved | service p99 | response p99 | response p99, all runs | agent CPU |
+| --- | --- | --- | --- | --- | --- | --- |
+| 100k | baseline | 100k | 0.42 µs | 219 µs | 3.7, 219, 455 µs | |
+| | aggregated | 100k | 0.58 µs | 6.3 µs | 0.9 µs, 6.3 µs, 18 ms | 0.0% |
+| | raw | 100k | 10.6 µs | 601 µs | 13 µs, 601 µs, 2.2 ms | 24.7% |
+| 250k | baseline | 250k | 0.38 µs | 1.4 µs | 1.1, 1.4, 4.5 µs | |
+| | aggregated | 250k | 0.50 µs | 2.0 µs | 1.3, 2.0, 2.1 µs | 0.0% |
+| | raw | 250k | 7.8 µs | 8.4 µs | 8.0, 8.4, 11 µs | 28.8% |
+| 500k | baseline | 500k | 0.38 µs | 0.71 µs | 0.47, 0.71, 1.4 µs | |
+| | aggregated | 500k | 0.50 µs | 0.82 µs | 0.54, 0.82, 2.4 µs | 0.0% |
+| | raw | 500k | 7.6 µs | 11 µs | 8.0, 11, 12 µs | 31.1% |
+| 1M | baseline | 999k | 0.38 µs | 2.6 µs | 1.1, 2.6, 3.1 µs | |
+| | aggregated | 1.00M | 0.50 µs | 2.1 µs | 0.9, 2.1, 3.5 µs | 0.0% |
+| | raw | 1.00M | 7.5 µs | 7.9 µs | 7.9, 7.9, 8.3 µs | 34.8% |
+| unthrottled | baseline | 12.3M | 0.33 µs | | | |
+| | aggregated | 7.32M | 0.46 µs | | | 0.0% |
+| | raw | 4.46M | 6.3 µs | | | 52.6% |
+
+Raw mode dropped a median of 776,552 events per unthrottled run, about 3.5% of the reads, and 0, 0 and 1,939 at 1M.
+
+Time inside the BPF programs ([`probe_cost_quiet.csv`](../benchmarks/results/probe_cost_quiet.csv), unthrottled five runs, 500k three runs):
+
+| load | mode | ns per program run | BPF ns per read |
+| --- | --- | --- | --- |
+| unthrottled | aggregated | 53–54 | 105–108 |
+| unthrottled | raw | 135–137 | 275–281 |
+| 500k reads/s | aggregated | 55–56 | 110–112 |
+| 500k reads/s | raw | 426–447 | 1019–1062 |
+
+What this shows:
+
+- **Throughput and BPF time agree.** Each of the two threads spends about 162 ns per read at baseline, 273 ns aggregated and 448 ns raw. That's 111 ns and 286 ns added per read, close to the 105 and 277 ns measured inside the programs.
+- **Aggregation costs the same paced or unthrottled.** 55 ns against 53 ns per run. The four-times-slower result in the sections below came from a single run.
+- **Raw mode gets more expensive per event at paced rates**: about 3.7 times the unthrottled cost per read at 500k. A likely reason is that the ring buffer drains between events, so each submit has to wake the consumer, where a busy consumer takes batches. The same explanation would fit its agent CPU staying near 25% even at 100k reads/s. Neither has been tested.
+- **At 250k and above, raw mode's response p99 is about 8–11 µs against 1–3 µs for the other two.** Aggregated and baseline can't be separated from these three runs.
+- **100k is the noisy row.** One run in each mode has a stall, up to 18 ms, and those ranges say nothing about the modes. The busier conditions below show the same effect at every rate.
+
+### Cost of the new hooks
+
+The build from before response, off-CPU and retransmit tracking was alternated with the current one five times ([`probe_cost_hooks_ab_quiet.csv`](../benchmarks/results/probe_cost_hooks_ab_quiet.csv)). Aggregated cost was 53 ns per run in all five old runs and 53–55 ns in the new ones, and raw was 135–138 ns for old and 135–137 ns for new. Any difference is under about 2 ns per run. That covers `read` only: the workload doesn't exercise the `write`, TCP or sleep paths.
 
 ## Overhead by rate
 
@@ -103,7 +151,9 @@ A busy vCPU elsewhere in the VM cuts the workload's p99 by more than half. Raw m
 
 ## Open-loop rerun
 
-The numbers above came from a `loadgen` that slept between 1 ms slots and timed each call from the moment it started, so a stall counted as one slow call. It now follows a fixed schedule: call n is due at start + n/rate, delayed calls run back to back, and each sample records both service time (call start to return) and response time (due time to return). It spins between calls instead of sleeping, which should also reduce the idle-CPU effect above, though that wasn't tested separately.
+This rerun was on a busy host, with a load average around 28. The stalls and hook-cost result below were superseded by [Current numbers](#current-numbers), and it's kept to show how much host load moves these figures.
+
+The earlier numbers came from a `loadgen` that slept between 1 ms slots and timed each call from the moment it started, so a stall counted as one slow call. It now follows a fixed schedule: call n is due at start + n/rate, delayed calls run back to back, and each sample records both service time (call start to return) and response time (due time to return). It spins between calls instead of sleeping, which should also reduce the idle-CPU effect above, though that wasn't tested separately.
 
 Medians of three 5-second runs in the same Lima VM, with every hook loaded ([`overhead_openloop.csv`](../benchmarks/results/overhead_openloop.csv)). The range is the lowest and highest of the three runs:
 
@@ -130,9 +180,9 @@ Raw mode's agent CPU, last measured with the old decoder, was 25.6% at 1M reads/
 
 Unthrottled, the medians were 8.03M reads/s baseline, 4.54M aggregated and 2.77M raw, with 68% agent CPU and 172,298 drops in the median raw run. Those aren't comparable with the 10.0M, 5.81M and 4.18M above. The baseline has no BPF at all and still fell, and the Mac's load average was about 28 when these ran.
 
-### Cost of the new hooks
+### Cost of the new hooks on a busy host
 
-Under that same load the previous build and the current one were alternated three times at the unthrottled rate ([`probe_cost_hooks_ab.csv`](../benchmarks/results/probe_cost_hooks_ab.csv)). Aggregated cost was 130–134 ns per run before response, off-CPU and retransmit tracking, and 138, 146 and 85 ns with them. The 85 ns run also did about 50% more reads, so the host probably got quieter during it. Without it the new build is a little slower, and with it faster, so three pairs on a loaded host are inconclusive. This workload doesn't exercise the `write`, TCP or sleep paths either.
+The quieter A/B in [Current numbers](#current-numbers) replaces this one. Under that same load the previous build and the current one were alternated three times at the unthrottled rate ([`probe_cost_hooks_ab.csv`](../benchmarks/results/probe_cost_hooks_ab.csv)). Aggregated cost was 130–134 ns per run before response, off-CPU and retransmit tracking, and 138, 146 and 85 ns with them. The 85 ns run also did about 50% more reads, so the host probably got quieter during it. Without it the new build is a little slower, and with it faster, so three pairs on a loaded host are inconclusive. This workload doesn't exercise the `write`, TCP or sleep paths either.
 
 ## Ring buffer size
 
