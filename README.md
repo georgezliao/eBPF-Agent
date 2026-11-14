@@ -1,6 +1,10 @@
 # TraceLens
 
-TraceLens is a Linux eBPF tool that shows, per process, how long syscalls take and how long threads wait for a CPU. It traces `read`, `write`, `openat`, `connect`, `fsync`/`fdatasync`, run-queue delay, how long non-blocking reads wait for data, and TCP retransmits. It keeps per-process latency histograms inside the kernel and only streams individual calls to userspace for one process at a time, when asked or when a latency threshold trips. For one process it can also show which kernel and user stacks its threads slept in.
+TraceLens is a Linux eBPF tool that shows, per process, how long syscalls take and how long threads wait for a CPU.
+
+
+
+It traces `read`, `write`, `openat`, `connect`, `fsync`/`fdatasync`, run-queue delay, how long non-blocking reads wait for data, and TCP retransmits. It keeps per-process latency histograms inside the kernel and only streams individual calls to userspace for one process at a time, when asked or when a latency threshold trips. For one process it can also show which kernel and user stacks its threads slept in.
 
 It's written in Go and C with [cilium/ebpf](https://github.com/cilium/ebpf) and `bpf2go`. The output below is from the [demo](docs/demo.md), where a client's requests to a small service get slow for three different reasons. The columns are trimmed from `tracelens top`:
 
@@ -96,11 +100,12 @@ The integration tests in `tests/integration` drive known workloads (slow pipe re
 
 Measured in a 4-vCPU Lima VM on an M4 MacBook Air with a worst-case workload: back-to-back 1-byte reads from `/dev/zero`, about 160 ns each. Throughput and CPU are medians of three 5-second runs, BPF time of five. Full method and caveats are in [docs/benchmarks.md](docs/benchmarks.md).
 
-| | reads/s, 2 threads unthrottled | agent CPU at 1M reads/s | BPF time per read, unthrottled (upper bound) |
-| --- | --- | --- | --- |
-| no tracing | 12.3M | | |
-| in-kernel aggregation (default) | 7.32M | ~0% | ≤105 ns |
-| every event to userspace (`-export-all`) | 4.46M, about 3.5% of events dropped | 35% of a core | ≤278 ns |
+
+|                                          | reads/s, 2 threads unthrottled      | agent CPU at 1M reads/s | BPF time per read, unthrottled (upper bound) |
+| ------------------------------------------ | ------------------------------------- | ------------------------- | ---------------------------------------------- |
+| no tracing                               | 12.3M                               |                         |                                              |
+| in-kernel aggregation (default)          | 7.32M                               | ~0%                     | ≤105 ns                                     |
+| every event to userspace (`-export-all`) | 4.46M, about 3.5% of events dropped | 35% of a core           | ≤278 ns                                     |
 
 At 1M reads/s, the workload's response p99 measured from each call's scheduled start was 2.6 µs with no tracing, 2.1 µs with aggregation and 7.9 µs with every event sent to userspace.
 
