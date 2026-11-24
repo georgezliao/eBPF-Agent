@@ -128,7 +128,7 @@ That's back to the unthrottled cost, so the wakeup accounts for the difference. 
 
 ### Batched wakeups
 
-The emit path now submits events with `BPF_RB_NO_WAKEUP` unless the ring buffer is at least a quarter full, and the reader polls every 10 ms for the rest. `ab.sh` alternated the build before this change with the one after, three pairs per benchmark, each run under `quiet.sh` (36 kept, 16 discarded, load average at most 5).
+The emit path now submits events with `BPF_RB_NO_WAKEUP` unless the ring buffer is at least a quarter full, and the reader polls every 10 ms for the rest. `ab.sh` alternated the build before this change with the one after, three pairs per benchmark, each run under `quiet.sh` ([log](../benchmarks/results/wakeup_batched_quiet_log.txt): 36 kept, 16 discarded, load average at most 5).
 
 Raw mode, from [`wakeup_batched_overhead.csv`](../benchmarks/results/wakeup_batched_overhead.csv), with each cell giving all three runs, before → after:
 
@@ -141,7 +141,7 @@ Raw mode, from [`wakeup_batched_overhead.csv`](../benchmarks/results/wakeup_batc
 
 Unthrottled, raw mode's throughput went from 4.12–4.39M to 5.20–5.27M reads/s. Its BPF time per read went from 1086–1128 to 193–248 ns at 500k reads/s, and from 282–436 to 200–306 ns unthrottled ([`wakeup_batched_cost_500k.csv`](../benchmarks/results/wakeup_batched_cost_500k.csv), [`wakeup_batched_cost_max.csv`](../benchmarks/results/wakeup_batched_cost_max.csv)).
 
-The cost is delay. `TestTrickleOfEventsArrivesByPolling`, with an event every 2 ms, saw a p50 of 4.9 ms and a max of 10.5 ms from the event to the reader in one run. Drops at 1M reads/s are bursty in both builds and the three runs can't separate them. Response p99 at 1M (in the CSV) was noisy in both builds, so it isn't in the table.
+The cost is delay. In one run of `TestTrickleOfEventsArrivesByPolling` in the Lima VM, with an event every 2 ms, the delay from event to reader was p50 4.9 ms and max 10.5 ms. The test fails above 50 ms. Drops at 1M reads/s are bursty in both builds and the three runs can't separate them. Response p99 at 1M (in the CSV) was noisy in both builds, so it isn't in the table.
 
 The tables in [Results](#results) were measured before this change, so their raw-mode rows are the old behaviour.
 

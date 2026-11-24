@@ -107,11 +107,11 @@ Measured in a 4-vCPU Lima VM on an M4 MacBook Air with a worst-case workload: ba
 | in-kernel aggregation (default)          | 7.32M                               | ~0%                     | ≤105 ns                                     |
 | every event to userspace (`-export-all`)\* | 5.22M, about 0.6% of events dropped | 10% of a core | ≤246 ns |
 
-\* Measured in a later sitting, alternating with the build before batched wakeups (below). In that sitting, baseline did 11.8–12.1M reads/s and aggregation 6.7–7.2M.
+\* Measured in a later sitting, alternating with the build before batched wakeups (below). In that sitting, baseline did 11.8–12.1M reads/s and aggregation 6.5–7.2M. Its BPF time is the median of three runs.
 
 At 1M reads/s, the workload's response p99 measured from each call's scheduled start was 2.6 µs with no tracing and 2.1 µs with aggregation.
 
-For syscalls that take microseconds or more, the per-call cost is a much smaller fraction: about 6 µs on a 38 µs TCP loopback round trip, measured the same way. Events reach userspace in batches: the kernel only wakes the reader when the ring buffer is a quarter full, and the reader polls every 10 ms for the rest. Waking it for every event cost several times more than writing the event. Batching cut `-export-all`'s agent CPU at 500k reads/s from about 31% to 5%, and its BPF time per read from about 1100 to 230 ns. In exchange, an event can arrive up to about 10 ms late. These numbers depend heavily on host load: with the Mac's load average around 28, the same tests gave very different results, so [docs/benchmarks.md](docs/benchmarks.md) records the conditions for each run.
+For syscalls that take microseconds or more, the per-call cost is a much smaller fraction: about 6 µs on a 38 µs TCP loopback round trip, measured the same way. Events reach userspace in batches: the kernel only wakes the reader when the ring buffer is a quarter full, and the reader polls every 10 ms for the rest. Waking the reader whenever it had caught up cost several times more than writing the event. Batching cut `-export-all`'s agent CPU at 500k reads/s from about 31% to 5%, and its BPF time per read from about 1100 to 230 ns. In exchange, an event can arrive about 10 ms late. These numbers depend heavily on host load: with the Mac's load average around 28, the same tests gave very different results, so [docs/benchmarks.md](docs/benchmarks.md) records the conditions for each run.
 
 ## Limitations
 

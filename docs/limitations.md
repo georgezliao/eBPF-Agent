@@ -47,7 +47,7 @@ File I/O (regular files are always blocking), `fsync` and run-queue delay show u
 - `sock_owner` holds 65536 sockets, also LRU. An evicted socket's retransmits go to PID 0 until it sends again.
 - User stacks need frame pointers, which Go has and most C builds don't, so those can come back short or empty. Only the executable's own functions get names: shared libraries print as addresses, and so does everything in a stripped binary.
 - `kernel_stacks` and `user_stacks` hold 8192 stacks each, but a stack whose hash collides with a stored one is dropped, which starts around 100 distinct stacks per map. Those sleeps print as "stack not captured". `offcpu` holds 4096 pairs of stacks.
-- Events can reach userspace up to about 10 ms after they happen, since the reader polls for batches smaller than a quarter of the ring. `trace -duration` and captures stop when their time is up, so the last few milliseconds of events may be left in the ring for the next reader, which skips them by PID.
+- Events can reach userspace about 10 ms after they happen, since the reader polls for batches smaller than a quarter of the ring. `trace` and captures flush the reader when their time is up, so events already in the ring still get counted.
 - The ring buffer drops events when the consumer falls behind; the count is reported by `trace`, captures and `tracelens_events_dropped_total`. [benchmarks.md](benchmarks.md) shows where that starts.
 
 ## Kernel requirements
