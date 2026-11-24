@@ -6,11 +6,13 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/georgezliao/tracelens/internal/probe"
+	"golang.org/x/sys/unix"
 )
 
 // drain returns the events that arrive within 300ms. It can't wait for the stream to go
@@ -26,7 +28,7 @@ func drain(t *testing.T, p *probe.Probe) []probe.Event {
 	rd.SetDeadline(time.Now().Add(300 * time.Millisecond))
 	var out []probe.Event
 	for {
-		rec, err := rd.Read()
+		rec, err := rd.Reader.Read() // stop at the deadline instead of polling past it
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			return out
 		}
@@ -140,4 +142,52 @@ func TestFullRingBufferCountsDrops(t *testing.T) {
 		t.Errorf("delivered %d + dropped %d < %d calls made", got, drops, n)
 	}
 	t.Logf("ring %d bytes: delivered %d, dropped %d", os.Getpagesize(), got, drops)
+}
+
+// Events arrive without a wakeup unless the ring fills up, so at a low rate they depend
+// on the reader's polling. They must still arrive, and not much later than one poll.
+func TestTrickleOfEventsArrivesByPolling(t *testing.T) {
+	p := openProbe(t)
+	rd, err := p.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rd.Close()
+	if err := p.SetTarget(uint32(os.Getpid()), 0); err != nil {
+		t.Fatal(err)
+	}
+	defer p.SetTarget(0, 0)
+
+	const n = 50
+	go func() {
+		for range n {
+			badReads(1)
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+	var delays []time.Duration
+	deadline := time.Now().Add(5 * time.Second)
+	for len(delays) < n && time.Now().Before(deadline) {
+		rec, err := rd.Read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var now unix.Timespec
+		unix.ClockGettime(unix.CLOCK_MONOTONIC, &now)
+		e, err := probe.Decode(rec.RawSample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if probe.Op(e.Op) == probe.OpRead && e.Ret < 0 {
+			delays = append(delays, time.Duration(now.Nano()-int64(e.TsNs)))
+		}
+	}
+	if len(delays) < n {
+		t.Fatalf("got %d of %d events", len(delays), n)
+	}
+	slices.Sort(delays)
+	t.Logf("delay from event to read: p50 %v, max %v", delays[n/2], delays[n-1])
+	if delays[n-1] > 50*time.Millisecond {
+		t.Errorf("an event took %v to arrive, want well under 50ms with a 10ms poll", delays[n-1])
+	}
 }

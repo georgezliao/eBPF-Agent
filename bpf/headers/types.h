@@ -30,4 +30,14 @@ enum {
 	BPF_NOEXIST = 1,
 };
 
+enum {
+	BPF_RB_NO_WAKEUP = 1,
+	BPF_RB_FORCE_WAKEUP = 2,
+};
+
+enum {
+	BPF_RB_AVAIL_DATA = 0,
+	BPF_RB_RING_SIZE = 1,
+};
+
 #include "bpf_helpers.h"

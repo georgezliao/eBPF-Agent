@@ -288,9 +288,36 @@ func (p *Probe) RunStats() (runs uint64, runtime time.Duration, err error) {
 	return runs, runtime, nil
 }
 
-// Events opens a reader on the event ring buffer. Close it to unblock a pending Read.
-func (p *Probe) Events() (*ringbuf.Reader, error) {
-	return ringbuf.NewReader(p.coll.Maps["events"])
+// pollInterval bounds how late an event can arrive. The kernel only wakes the reader
+// once the ring is a quarter full, so a trickle of events waits for the next poll.
+const pollInterval = 10 * time.Millisecond
+
+// EventReader reads the event ring buffer, polling for events the kernel submitted
+// without waking it. Close it to unblock a pending Read.
+type EventReader struct {
+	*ringbuf.Reader
+}
+
+// Events opens a reader on the event ring buffer.
+func (p *Probe) Events() (EventReader, error) {
+	rd, err := ringbuf.NewReader(p.coll.Maps["events"])
+	if err != nil {
+		return EventReader{}, err
+	}
+	rd.SetDeadline(time.Now().Add(pollInterval))
+	return EventReader{rd}, nil
+}
+
+// Read returns the next record. When a poll finds nothing, the deadline moves on and it
+// waits again, so it only returns early on Close or an error.
+func (r EventReader) Read() (ringbuf.Record, error) {
+	for {
+		rec, err := r.Reader.Read()
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			return rec, err
+		}
+		r.SetDeadline(time.Now().Add(pollInterval))
+	}
 }
 
 // Indexes into the lost map, matching LOST_* in tracelens.bpf.c.

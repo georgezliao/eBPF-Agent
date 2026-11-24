@@ -293,7 +293,13 @@ static __always_inline void emit(__u32 tgid, __u32 tid, __u32 op, __u64 now, __u
 		bpf_probe_read_kernel_str(e->comm, sizeof(e->comm), task->comm);
 	else
 		bpf_get_current_comm(e->comm, sizeof(e->comm));
-	bpf_ringbuf_submit(e, 0);
+	// Waking the reader costs several times more than writing the event when it's often
+	// asleep (about 1040 vs 260 ns per read at 500k reads/s in the Lima VM). So only wake
+	// it once the ring is a quarter full, and let userspace poll for smaller batches.
+	__u64 flags = BPF_RB_NO_WAKEUP;
+	if (bpf_ringbuf_query(&events, BPF_RB_AVAIL_DATA) * 4 >= bpf_ringbuf_query(&events, BPF_RB_RING_SIZE))
+		flags = BPF_RB_FORCE_WAKEUP;
+	bpf_ringbuf_submit(e, flags);
 }
 
 // deliver handles one finished call or run-queue wait: aggregate it, and send it to
