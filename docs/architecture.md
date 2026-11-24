@@ -41,7 +41,7 @@ The tracepoint context structs are written by hand from `/sys/kernel/tracing/eve
 
 EAGAIN and EINPROGRESS are not counted as errors. Non-blocking I/O returns them as a normal step, and Go's runtime does it for every socket and pipe read, so counting them made healthy Go processes look like they were failing.
 
-**Detailed events.** `events` is a ring buffer (256 KiB by default, sizable at load). An event is emitted when the finished call belongs to `config.target_tgid` and is at least `config.min_duration_ns` long. Userspace changes the target by writing the config map; no program is reattached. If `bpf_ringbuf_reserve` fails, the `lost` map counts it rather than blocking or retrying, since the hook runs in the traced thread's syscall path.
+**Detailed events.** `events` is a ring buffer (256 KiB by default, sizable at load). An event is emitted when the finished call belongs to `config.target_tgid` and is at least `config.min_duration_ns` long. Userspace changes the target by writing the config map; no program is reattached. If `bpf_ringbuf_reserve` fails, the `lost` map counts it rather than blocking or retrying, since the hook runs in the traced thread's syscall path. Submitting doesn't wake the reader unless the ring is at least a quarter full. Waking it costs several times more than writing the event when the reader keeps falling asleep, so `probe.EventReader` polls every 10 ms for smaller batches instead.
 
 `config.export_all` is a benchmark mode: every call from every process goes to the ring buffer and the kernel skips aggregation, so the agent has to aggregate in Go. It exists to compare the two designs on the same code path.
 

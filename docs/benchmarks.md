@@ -35,7 +35,7 @@ scripts/linux.sh benchmarks/ringsweep.sh > benchmarks/results/ringsweep.csv
 python3 benchmarks/plot.py benchmarks/results
 ```
 
-`paths.sh` compares against `bin/tracelens-old` if it exists. On a machine other work is using, prefix a single-run command with `benchmarks/quiet.sh`, which only keeps output when the load stayed low; `paths_quiet.sh` does that per op. `probe_cost.sh` prints one run, so the committed `probe_cost_quiet.csv` is five unthrottled runs and three at 500k with a `load` column added. `probe_cost_hooks_ab_quiet.csv` came from the same loop that `ab.sh` now wraps, with longer build names.
+`paths.sh` compares against `bin/tracelens-old` if it exists. On a machine other work is using, prefix a single-run command with `benchmarks/quiet.sh`, which only keeps output when the load stayed low; `paths_quiet.sh` does that per op. `probe_cost.sh` prints one run, so the committed `probe_cost_quiet.csv` is five unthrottled runs and three at 500k with a `load` column added. `probe_cost_hooks_ab_quiet.csv` came from the same loop that `ab.sh` now wraps, with longer build names. `ab.sh` can also run another benchmark, such as `benchmarks/ab.sh HEAD~1 RATES=500000 REPS=1 benchmarks/overhead.sh`.
 
 ## Results
 
@@ -83,7 +83,7 @@ What this shows:
 
 - **BPF time explains most of the throughput loss.** At the median, each of the two threads spends about 162 ns per read at baseline, 273 ns aggregated and 448 ns raw. That adds 111 and 286 ns, against 105 and 278 ns measured inside the programs. The match is rough: baseline varied by about 9% between runs, the BPF numbers come from separate runs with stats on, and tracepoint dispatch outside the programs should cost something too.
 - **Aggregated mode costs the agent essentially nothing.** Reading the stats map once a second is a few hundred map entries however many syscalls happened.
-- **Raw mode's BPF cost per read is nearly four times higher at 500k than unthrottled**, and waking the consumer is why. See [below](#why-raw-mode-costs-more-when-paced).
+- **Raw mode's BPF cost per read is nearly four times higher at 500k than unthrottled**, and waking the consumer is why. See [below](#why-raw-mode-costs-more-when-paced). Batching wakeups has since fixed this ([Batched wakeups](#batched-wakeups)).
 - **Aggregation's cost doesn't change when paced**, at least with this spinning workload. An earlier run with a sleeping `loadgen` measured it four times slower, and repeats on a busy host didn't reproduce that. The sleeping condition hasn't been rerun on a quiet host.
 - **At 250k and above, raw mode's median response p99 is 8–11 µs against 0.7–2.6 µs for the other two.** Baseline and aggregated can't be separated from three runs.
 - **The 100k row can't be used to compare modes.** Two baseline runs, one aggregated run and two raw runs hit stalls of up to 18 ms. 100k is also always the first rate in `overhead.sh`, and the worst values are in its first two repetitions, so this may be warm-up and not the rate.
@@ -117,7 +117,7 @@ Per-program stats (`bpftool prog show` with stats on, one 5-second run each) put
 | unthrottled | 218 | 51 |
 | 500k reads/s | 858 | 58 |
 
-An experimental build, not in this repo, submitted events with `BPF_RB_NO_WAKEUP` and had the consumer poll every 1 ms. Alternating it with the normal build three times at 500k reads/s ([`wakeup_experiment.csv`](../benchmarks/results/wakeup_experiment.csv)):
+An experimental build submitted events with `BPF_RB_NO_WAKEUP` and had the consumer poll every 1 ms. Alternating it with the normal build three times at 500k reads/s ([`wakeup_experiment.csv`](../benchmarks/results/wakeup_experiment.csv)):
 
 | build | BPF ns per read |
 | --- | --- |
@@ -125,6 +125,25 @@ An experimental build, not in this repo, submitted events with `BPF_RB_NO_WAKEUP
 | no wakeup | 202, 262, 279 |
 
 That's back to the unthrottled cost, so the wakeup accounts for the difference. Presumably the consumer is rarely asleep when unthrottled, so it rarely needs waking, but that wasn't measured. The agent's CPU and the delay before events arrive weren't measured for that build, and wakeups may cost more in a VM than on bare metal.
+
+### Batched wakeups
+
+The emit path now submits events with `BPF_RB_NO_WAKEUP` unless the ring buffer is at least a quarter full, and the reader polls every 10 ms for the rest. `ab.sh` alternated the build before this change with the one after, three pairs per benchmark, each run under `quiet.sh` (36 kept, 16 discarded, load average at most 5).
+
+Raw mode, from [`wakeup_batched_overhead.csv`](../benchmarks/results/wakeup_batched_overhead.csv), with each cell giving all three runs, before → after:
+
+| target reads/s | agent CPU | workload service p99 | events dropped |
+| --- | --- | --- | --- |
+| 100k | 26.4, 26.7, 29.7% → 2.0, 2.4, 4.6% | 11.5, 12.3, 29.2 µs → 0.67, 0.75, 4.0 µs | 0 → 0 |
+| 500k | 30.9, 31.2, 32.7% → 4.4, 4.6, 5.0% | 7.9, 9.1, 10.6 µs → 0.67, 0.67, 0.71 µs | 0 → 0 |
+| 1M | 36.6, 37.0, 39.9% → 8.4, 10.0, 13.3% | 6.8, 7.1, 7.7 µs → 0.76, 1.1, 4.1 µs | 3,854–25,065 → 0–23,884 |
+| unthrottled | 51.5, 52.9, 58.2% → 39.3, 39.7, 40.2% | 6.5, 6.6, 7.0 µs → 0.64, 0.67, 0.67 µs | 140k–431k → 148k–182k |
+
+Unthrottled, raw mode's throughput went from 4.12–4.39M to 5.20–5.27M reads/s. Its BPF time per read went from 1086–1128 to 193–248 ns at 500k reads/s, and from 282–436 to 200–306 ns unthrottled ([`wakeup_batched_cost_500k.csv`](../benchmarks/results/wakeup_batched_cost_500k.csv), [`wakeup_batched_cost_max.csv`](../benchmarks/results/wakeup_batched_cost_max.csv)).
+
+The cost is delay. `TestTrickleOfEventsArrivesByPolling`, with an event every 2 ms, saw a p50 of 4.9 ms and a max of 10.5 ms from the event to the reader in one run. Drops at 1M reads/s are bursty in both builds and the three runs can't separate them. Response p99 at 1M (in the CSV) was noisy in both builds, so it isn't in the table.
+
+The tables in [Results](#results) were measured before this change, so their raw-mode rows are the old behaviour.
 
 ## Host load changes everything
 

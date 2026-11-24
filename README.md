@@ -105,11 +105,13 @@ Measured in a 4-vCPU Lima VM on an M4 MacBook Air with a worst-case workload: ba
 | ------------------------------------------ | ------------------------------------- | ------------------------- | ---------------------------------------------- |
 | no tracing                               | 12.3M                               |                         |                                              |
 | in-kernel aggregation (default)          | 7.32M                               | ~0%                     | ≤105 ns                                     |
-| every event to userspace (`-export-all`) | 4.46M, about 3.5% of events dropped | 35% of a core           | ≤278 ns                                     |
+| every event to userspace (`-export-all`)\* | 5.22M, about 0.6% of events dropped | 10% of a core | ≤246 ns |
 
-At 1M reads/s, the workload's response p99 measured from each call's scheduled start was 2.6 µs with no tracing, 2.1 µs with aggregation and 7.9 µs with every event sent to userspace.
+\* Measured in a later sitting, alternating with the build before batched wakeups (below). In that sitting, baseline did 11.8–12.1M reads/s and aggregation 6.7–7.2M.
 
-For syscalls that take microseconds or more, the per-call cost is a much smaller fraction: about 6 µs on a 38 µs TCP loopback round trip, measured the same way. `-export-all` costs about four times more per read at paced rates than unthrottled, because waking the consumer is expensive in this VM. See [docs/benchmarks.md](docs/benchmarks.md). These numbers depend heavily on host load: with the Mac's load average around 28, the same tests gave very different results, so [docs/benchmarks.md](docs/benchmarks.md) records the conditions for each run.
+At 1M reads/s, the workload's response p99 measured from each call's scheduled start was 2.6 µs with no tracing and 2.1 µs with aggregation.
+
+For syscalls that take microseconds or more, the per-call cost is a much smaller fraction: about 6 µs on a 38 µs TCP loopback round trip, measured the same way. Events reach userspace in batches: the kernel only wakes the reader when the ring buffer is a quarter full, and the reader polls every 10 ms for the rest. Waking it for every event cost several times more than writing the event. Batching cut `-export-all`'s agent CPU at 500k reads/s from about 31% to 5%, and its BPF time per read from about 1100 to 230 ns. In exchange, an event can arrive up to about 10 ms late. These numbers depend heavily on host load: with the Mac's load average around 28, the same tests gave very different results, so [docs/benchmarks.md](docs/benchmarks.md) records the conditions for each run.
 
 ## Limitations
 
@@ -129,7 +131,6 @@ The full list is in [docs/limitations.md](docs/limitations.md). The ones most li
 
 Ideas that aren't built yet.
 
-- **Batched ring buffer wakeups.** Waking the consumer is most of the per-event cost at moderate rates. Submitting with `BPF_RB_NO_WAKEUP` and polling took raw mode from about 1040 to 260 ns per read at 500k reads/s in a throwaway experiment in the Lima VM, and `trace` and triggered captures use the same path. Its effect on consumer CPU and capture latency hasn't been measured.
 - **Writes blocked on a full socket buffer.** `write` returning EAGAIN could be timed the same way as read wait.
 - **`recv`, `recvfrom` and `recvmsg`.** Read wait only sees `read(2)`, so programs that use these don't get it.
 - **Per-CPU maps at high core counts.** Each stats value is 352 bytes per CPU, so a shared hash with atomics may become the better trade at some core count. Finding where needs a machine with many cores.

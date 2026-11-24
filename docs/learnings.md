@@ -107,7 +107,11 @@ Then I added user stacks. The same sleep now continues down through `syscall.Fda
 
 Raw mode cost nearly four times more per read at 500k reads/s than flat out in the Lima VM, when you'd think a quieter system would be cheaper. Per-program stats put it all in `exit_read`, 858 ns per run against 218. So I built a version that submits with `BPF_RB_NO_WAKEUP` and has the consumer poll every millisecond instead, and it went from about 1040 ns per read to about 260.
 
-So the expensive part isn't writing the event, it's waking the reader. My guess is that flat out, the consumer is already awake and draining, so nobody needs waking, and at a moderate rate it keeps falling asleep. That's a little backwards from what I'd assumed, that a busy system pays more. It might be worse in a VM too, I haven't tried bare metal. And I only measured the BPF side, so I don't know what polling costs the agent.
+So the expensive part isn't writing the event, it's waking the reader. My guess is that flat out, the consumer is already awake and draining, so nobody needs waking, and at a moderate rate it keeps falling asleep. That's a little backwards from what I'd assumed, that a busy system pays more. It might be worse in a VM too, I haven't tried bare metal.
+
+So I built it properly: the kernel only wakes the reader once the ring is a quarter full, and the reader polls every 10 ms for anything smaller. In raw mode at 500k reads/s, agent CPU went from about 31% to 5%, and the traced workload's p99 went from about 9 µs to 0.7 µs, basically the same as without sending events at all. The price is that an event can sit there for up to 10 ms, which doesn't matter for anything this tool does with them.
+
+One side effect showed up in the tests. The drop test traces itself, and it went from about 7,000 events to about 1,000, mostly because there are far fewer wakeups now, and each wakeup was itself a run-queue event for the traced process. It's the same observer effect as earlier, just less of it.
 
 ## Benchmarking next to my own other work
 
