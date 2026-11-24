@@ -293,9 +293,9 @@ func (p *Probe) RunStats() (runs uint64, runtime time.Duration, err error) {
 const pollInterval = 10 * time.Millisecond
 
 // EventReader reads the event ring buffer, polling for events the kernel submitted
-// without waking it. Close it to unblock a pending Read.
+// without waking it.
 type EventReader struct {
-	*ringbuf.Reader
+	rd *ringbuf.Reader
 }
 
 // Events opens a reader on the event ring buffer.
@@ -308,17 +308,24 @@ func (p *Probe) Events() (EventReader, error) {
 	return EventReader{rd}, nil
 }
 
-// Read returns the next record. When a poll finds nothing, the deadline moves on and it
-// waits again, so it only returns early on Close or an error.
+// Read returns the next record. It returns ringbuf.ErrFlushed once everything in the ring
+// at the time of a Flush has been read, and ringbuf.ErrClosed after Close.
 func (r EventReader) Read() (ringbuf.Record, error) {
 	for {
-		rec, err := r.Reader.Read()
+		rec, err := r.rd.Read()
 		if !errors.Is(err, os.ErrDeadlineExceeded) {
 			return rec, err
 		}
-		r.SetDeadline(time.Now().Add(pollInterval))
+		r.rd.SetDeadline(time.Now().Add(pollInterval))
 	}
 }
+
+// Flush makes Read drain what's in the ring and then return ringbuf.ErrFlushed, so a
+// reader that's finishing up gets the events still waiting for the next poll.
+func (r EventReader) Flush() error { return r.rd.Flush() }
+
+// Close releases the reader and unblocks a pending Read.
+func (r EventReader) Close() error { return r.rd.Close() }
 
 // Indexes into the lost map, matching LOST_* in tracelens.bpf.c.
 const (

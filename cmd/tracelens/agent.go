@@ -48,10 +48,11 @@ func consumeAll(ctx context.Context, p *probe.Probe, m *metrics) error {
 	if err != nil {
 		return err
 	}
-	go func() { <-ctx.Done(); rd.Close() }()
+	defer rd.Close()
+	go func() { <-ctx.Done(); rd.Flush() }()
 	for {
 		rec, err := rd.Read()
-		if errors.Is(err, ringbuf.ErrClosed) {
+		if errors.Is(err, ringbuf.ErrFlushed) {
 			return nil
 		}
 		if err != nil {

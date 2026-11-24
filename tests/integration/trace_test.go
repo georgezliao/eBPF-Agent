@@ -11,13 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf/ringbuf"
 	"github.com/georgezliao/tracelens/internal/probe"
 	"golang.org/x/sys/unix"
 )
 
 // drain returns the events that arrive within 300ms. It can't wait for the stream to go
-// quiet: when the test traces itself, every Read wakes this goroutine, and that wakeup is
-// itself a new run-queue event for the traced process.
+// quiet: when the test traces itself, each time the reader wakes up to poll, that wakeup
+// is itself a new run-queue event for the traced process.
 func drain(t *testing.T, p *probe.Probe) []probe.Event {
 	t.Helper()
 	rd, err := p.Events()
@@ -25,11 +26,11 @@ func drain(t *testing.T, p *probe.Probe) []probe.Event {
 		t.Fatal(err)
 	}
 	defer rd.Close()
-	rd.SetDeadline(time.Now().Add(300 * time.Millisecond))
+	time.AfterFunc(300*time.Millisecond, func() { rd.Flush() })
 	var out []probe.Event
 	for {
-		rec, err := rd.Reader.Read() // stop at the deadline instead of polling past it
-		if errors.Is(err, os.ErrDeadlineExceeded) {
+		rec, err := rd.Read()
+		if errors.Is(err, ringbuf.ErrFlushed) {
 			return out
 		}
 		if err != nil {
@@ -159,6 +160,7 @@ func TestTrickleOfEventsArrivesByPolling(t *testing.T) {
 	defer p.SetTarget(0, 0)
 
 	const n = 50
+	time.AfterFunc(5*time.Second, func() { rd.Close() })
 	go func() {
 		for range n {
 			badReads(1)
@@ -166,9 +168,11 @@ func TestTrickleOfEventsArrivesByPolling(t *testing.T) {
 		}
 	}()
 	var delays []time.Duration
-	deadline := time.Now().Add(5 * time.Second)
-	for len(delays) < n && time.Now().Before(deadline) {
+	for len(delays) < n {
 		rec, err := rd.Read()
+		if errors.Is(err, ringbuf.ErrClosed) {
+			t.Fatalf("got %d of %d events in 5s", len(delays), n)
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -178,12 +182,9 @@ func TestTrickleOfEventsArrivesByPolling(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if probe.Op(e.Op) == probe.OpRead && e.Ret < 0 {
+		if probe.Op(e.Op) == probe.OpRead && e.Ret == -int64(syscall.EBADF) { // badReads, not the runtime
 			delays = append(delays, time.Duration(now.Nano()-int64(e.TsNs)))
 		}
-	}
-	if len(delays) < n {
-		t.Fatalf("got %d of %d events", len(delays), n)
 	}
 	slices.Sort(delays)
 	t.Logf("delay from event to read: p50 %v, max %v", delays[n/2], delays[n-1])

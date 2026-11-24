@@ -129,13 +129,13 @@ func capture(ctx context.Context, p *probe.Probe, tgid uint32, dur, minDur time.
 	go func() {
 		<-ctx.Done()
 		p.SetTarget(0, 0)
-		rd.Close()
+		rd.Flush() // up to one poll interval of events is still in the ring
 	}()
 
 	s := newSummary()
 	for {
 		rec, err := rd.Read()
-		if errors.Is(err, ringbuf.ErrClosed) {
+		if errors.Is(err, ringbuf.ErrFlushed) {
 			lostAfter, _, err := p.Lost()
 			return s, lostAfter - lostBefore, err
 		}
